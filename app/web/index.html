@@ -672,11 +672,19 @@ function scoreForm(r) {
   const f = el("div", "form", `<label>Score, 0 to 100<input type="number" min="0" max="100" value="${r.risk ? esc(r.risk.score) : 15}"></label>
     <label>Reason codes<input value="${esc(r.risk ? (r.risk.reasonCodes || []).join(", ") : "OK")}" style="width:180px"></label>`);
   const [score, codes] = f.querySelectorAll("input");
-  f.appendChild(act(!r.risk ? "Record score" : byAI(r) ? "Override score" : "Update score", async () => {
-    const list = codes.value.split(",").map(x => x.trim()).filter(Boolean);
-    const report = JSON.stringify({ id: r.id, score: +score.value, reasons: list, by: ME.username, at: new Date().toISOString() });
-    await tx("InvoiceRegistry:RecordRiskScore", [r.id, +score.value, MANUAL, list, await sha256(report)], null, { done: "Score recorded on the ledger" });
-  }));
+  const list = () => codes.value.split(",").map(x => x.trim()).filter(Boolean);
+  const save = act(!r.risk ? "Record score" : byAI(r) ? "Override score" : "Update score", async () => {
+    const report = JSON.stringify({ id: r.id, score: +score.value, reasons: list(), by: ME.username, at: new Date().toISOString() });
+    await tx("InvoiceRegistry:RecordRiskScore", [r.id, +score.value, MANUAL, list(), await sha256(report)], null, { done: "Score recorded on the ledger" });
+  });
+  // An existing score can only be replaced by a different one, so clicking
+  // through never turns the AI's score into a hand-set copy of itself.
+  if (r.risk) {
+    const same = () => +score.value === r.risk.score && list().join(",") === (r.risk.reasonCodes || []).join(",");
+    save.disabled = true;
+    score.oninput = codes.oninput = () => { save.disabled = same(); };
+  }
+  f.appendChild(save);
   return f;
 }
 
