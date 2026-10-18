@@ -1,0 +1,5 @@
+#!/bin/sh
+# Tell the peer where to dial the chaincode server.
+set -e
+mkdir -p "$2/chaincode/server"
+cp "$1/connection.json" "$2/chaincode/server/connection.json"

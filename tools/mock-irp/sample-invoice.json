@@ -1,0 +1,9 @@
+{
+  "SellerGstin": "27AAACM1234A1Z5",
+  "BuyerGstin": "29AABCB5678B1Z2",
+  "DocNo": "MSME/26-27/0042",
+  "DocTyp": "INV",
+  "TotInvVal": 1000000.0,
+  "ItemCnt": 3,
+  "MainHsnCode": "8481"
+}

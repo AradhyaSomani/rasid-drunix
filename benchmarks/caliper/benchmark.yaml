@@ -1,0 +1,44 @@
+# RASID Caliper benchmark: registry throughput under month-end load, and the
+# duplicate-check reads lenders run before financing. Proposed as an open
+# benchmark pack for DRUNIX, comparing peer and lite-peer / stateless
+# validation set-ups at the same send rates.
+test:
+  name: rasid-registry
+  description: GST e-invoice registration and duplicate checks on DRUNIX
+  workers:
+    number: 4
+  rounds:
+    - label: register-e-invoice
+      description: IRP signature check, uniqueness write, event emit
+      txDuration: 60
+      rateControl:
+        type: fixed-rate
+        opts: { tps: 200 }
+      workload:
+        module: workloads/registerInvoice.js
+        arguments: &args
+          irpPrivateKey: ./keys/irp-private.pem
+          sellerGstin: 27AAACM1234A1Z5
+          buyerGstin: 29AABCB5678B1Z2
+          supplierIdentity: supplier1     # enrolled with rasid.role=supplier, rasid.gstin=27AAACM1234A1Z5
+          supplierMspId: BankAMSP
+          financierIdentity: financier1   # enrolled with rasid.role=financier
+          financierMspId: CitiMSP
+    - label: month-end-spike
+      description: ramp to find the saturation point
+      txDuration: 120
+      rateControl:
+        type: linear-rate
+        opts: { startingTps: 100, finishingTps: 1000 }
+      workload:
+        module: workloads/registerInvoice.js
+        arguments: *args
+    - label: check-duplicate
+      description: read-only lookups
+      txDuration: 60
+      rateControl:
+        type: fixed-rate
+        opts: { tps: 1000 }
+      workload:
+        module: workloads/checkDuplicate.js
+        arguments: *args

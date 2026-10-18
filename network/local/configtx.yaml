@@ -1,0 +1,97 @@
+# Channel configuration for the local RASID network. Paths are relative to
+# the crypto/ folder that up.sh generates next to this file's copy.
+Organizations:
+  - &OrdererOrg
+    Name: OrdererMSP
+    ID: OrdererMSP
+    MSPDir: crypto/ordererOrganizations/orderer.rasid/msp
+    Policies:
+      Readers: { Type: Signature, Rule: "OR('OrdererMSP.member')" }
+      Writers: { Type: Signature, Rule: "OR('OrdererMSP.member')" }
+      Admins: { Type: Signature, Rule: "OR('OrdererMSP.admin')" }
+    OrdererEndpoints: [localhost:7050]
+
+  - &NPCI
+    Name: NPCIMSP
+    ID: NPCIMSP
+    MSPDir: crypto/peerOrganizations/npci.rasid/msp
+    Policies: &NPCIPolicies
+      Readers: { Type: Signature, Rule: "OR('NPCIMSP.admin', 'NPCIMSP.peer', 'NPCIMSP.client')" }
+      Writers: { Type: Signature, Rule: "OR('NPCIMSP.admin', 'NPCIMSP.client')" }
+      Admins: { Type: Signature, Rule: "OR('NPCIMSP.admin')" }
+      Endorsement: { Type: Signature, Rule: "OR('NPCIMSP.peer')" }
+    AnchorPeers: [{ Host: localhost, Port: 7051 }]
+
+  - &BankA
+    Name: BankAMSP
+    ID: BankAMSP
+    MSPDir: crypto/peerOrganizations/banka.rasid/msp
+    Policies:
+      Readers: { Type: Signature, Rule: "OR('BankAMSP.admin', 'BankAMSP.peer', 'BankAMSP.client')" }
+      Writers: { Type: Signature, Rule: "OR('BankAMSP.admin', 'BankAMSP.client')" }
+      Admins: { Type: Signature, Rule: "OR('BankAMSP.admin')" }
+      Endorsement: { Type: Signature, Rule: "OR('BankAMSP.peer')" }
+    AnchorPeers: [{ Host: localhost, Port: 8051 }]
+
+  - &Citi
+    Name: CitiMSP
+    ID: CitiMSP
+    MSPDir: crypto/peerOrganizations/citi.rasid/msp
+    Policies:
+      Readers: { Type: Signature, Rule: "OR('CitiMSP.admin', 'CitiMSP.peer', 'CitiMSP.client')" }
+      Writers: { Type: Signature, Rule: "OR('CitiMSP.admin', 'CitiMSP.client')" }
+      Admins: { Type: Signature, Rule: "OR('CitiMSP.admin')" }
+      Endorsement: { Type: Signature, Rule: "OR('CitiMSP.peer')" }
+    AnchorPeers: [{ Host: localhost, Port: 9051 }]
+
+Capabilities:
+  Channel: &ChannelCapabilities { V2_0: true }
+  Orderer: &OrdererCapabilities { V2_0: true }
+  Application: &ApplicationCapabilities { V2_5: true }
+
+Application: &ApplicationDefaults
+  Organizations:
+  Policies:
+    Readers: { Type: ImplicitMeta, Rule: "ANY Readers" }
+    Writers: { Type: ImplicitMeta, Rule: "ANY Writers" }
+    Admins: { Type: ImplicitMeta, Rule: "MAJORITY Admins" }
+    LifecycleEndorsement: { Type: ImplicitMeta, Rule: "MAJORITY Endorsement" }
+    Endorsement: { Type: ImplicitMeta, Rule: "MAJORITY Endorsement" }
+  Capabilities: *ApplicationCapabilities
+
+Orderer: &OrdererDefaults
+  OrdererType: etcdraft
+  Addresses: [localhost:7050]
+  EtcdRaft:
+    Consenters:
+      - Host: localhost
+        Port: 7050
+        ClientTLSCert: crypto/ordererOrganizations/orderer.rasid/orderers/orderer0.orderer.rasid/tls/server.crt
+        ServerTLSCert: crypto/ordererOrganizations/orderer.rasid/orderers/orderer0.orderer.rasid/tls/server.crt
+  BatchTimeout: 500ms
+  BatchSize: { MaxMessageCount: 100, AbsoluteMaxBytes: 99 MB, PreferredMaxBytes: 512 KB }
+  Organizations:
+  Policies:
+    Readers: { Type: ImplicitMeta, Rule: "ANY Readers" }
+    Writers: { Type: ImplicitMeta, Rule: "ANY Writers" }
+    Admins: { Type: ImplicitMeta, Rule: "MAJORITY Admins" }
+    BlockValidation: { Type: ImplicitMeta, Rule: "ANY Writers" }
+
+Channel: &ChannelDefaults
+  Policies:
+    Readers: { Type: ImplicitMeta, Rule: "ANY Readers" }
+    Writers: { Type: ImplicitMeta, Rule: "ANY Writers" }
+    Admins: { Type: ImplicitMeta, Rule: "MAJORITY Admins" }
+  Capabilities: *ChannelCapabilities
+
+Profiles:
+  RasidChannel:
+    <<: *ChannelDefaults
+    Orderer:
+      <<: *OrdererDefaults
+      Organizations: [*OrdererOrg]
+      Capabilities: *OrdererCapabilities
+    Application:
+      <<: *ApplicationDefaults
+      Organizations: [*NPCI, *BankA, *Citi]
+      Capabilities: *ApplicationCapabilities

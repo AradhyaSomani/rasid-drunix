@@ -1,0 +1,3 @@
+#!/bin/sh
+# Chaincode-as-a-service external builder: claim packages whose metadata type is "ccaas".
+grep -qi '"type"[[:space:]]*:[[:space:]]*"ccaas"' "$2/metadata.json"

@@ -1,0 +1,25 @@
+# Local 3-org RASID network: NPCI (operator + risk oracle), BankA (MSME
+# supplier and corporate buyer side) and Citi (financier), plus one Raft orderer.
+OrdererOrgs:
+  - Name: Orderer
+    Domain: orderer.rasid
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer0
+        SANS: [localhost, 127.0.0.1]
+PeerOrgs:
+  - Name: NPCI
+    Domain: npci.rasid
+    EnableNodeOUs: true
+    Template: { Count: 1, SANS: [localhost, 127.0.0.1] }
+    Users: { Count: 0 }
+  - Name: BankA
+    Domain: banka.rasid
+    EnableNodeOUs: true
+    Template: { Count: 1, SANS: [localhost, 127.0.0.1] }
+    Users: { Count: 0 }
+  - Name: Citi
+    Domain: citi.rasid
+    EnableNodeOUs: true
+    Template: { Count: 1, SANS: [localhost, 127.0.0.1] }
+    Users: { Count: 0 }

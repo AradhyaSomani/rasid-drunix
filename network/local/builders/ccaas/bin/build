@@ -1,0 +1,4 @@
+#!/bin/sh
+# Nothing to compile: the chaincode runs as its own server. Keep its address.
+set -e
+cp "$1/connection.json" "$3/connection.json"

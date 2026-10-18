@@ -1,0 +1,26 @@
+# Short version of benchmark.yaml for a laptop or the local network.
+test:
+  name: rasid-registry-smoke
+  workers: { number: 2 }
+  rounds:
+    - label: register-e-invoice
+      txDuration: 30
+      rateControl: { type: fixed-rate, opts: { tps: 50 } }
+      workload:
+        module: workloads/registerInvoice.js
+        arguments: &args
+          irpPrivateKey: ./keys/irp-private.pem
+          sellerGstin: 27AAACM1234A1Z5
+          buyerGstin: 29AABCB5678B1Z2
+          supplierIdentity: supplier1
+          supplierMspId: BankAMSP
+          financierIdentity: financier1
+          financierMspId: CitiMSP
+    - label: month-end-spike
+      txDuration: 30
+      rateControl: { type: linear-rate, opts: { startingTps: 50, finishingTps: 300 } }
+      workload: { module: workloads/registerInvoice.js, arguments: *args }
+    - label: check-duplicate
+      txDuration: 20
+      rateControl: { type: fixed-rate, opts: { tps: 200 } }
+      workload: { module: workloads/checkDuplicate.js, arguments: *args }
