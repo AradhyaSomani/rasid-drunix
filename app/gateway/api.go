@@ -12,17 +12,22 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hyperledger/fabric-gateway/pkg/client"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 // App holds the gateway connection and the HTTP handlers.
 type App struct {
-	cfg      config
-	network  *client.Network
-	contract *client.Contract
-	events   *hub
-	auth     *auth // nil: no login (scripts, adapters, the risk bridge)
+	cfg       config
+	network   *client.Network
+	eventsNet *client.Network // where chaincode events come from: the same peer, or a committing peer on DRUNIX
+	ledgerGw  *client.Gateway // set on DRUNIX: the committing peer, asked directly whether a transaction committed
+	contract  *client.Contract
+	events    *hub
+	auth      *auth // nil: no login (scripts, adapters, the risk bridge)
 }
 
 func (a *App) routes() http.Handler {
@@ -98,7 +103,17 @@ func (a *App) submit(name string, args []string, transient map[string][]byte, en
 	if err != nil {
 		return nil, err
 	}
-	status, err := commit.Status()
+	if a.ledgerGw != nil {
+		// Ask the committing peer itself: a lite peer only forwards the question.
+		b, err := commit.Bytes()
+		if err != nil {
+			return nil, err
+		}
+		if commit, err = a.ledgerGw.NewCommit(b); err != nil {
+			return nil, err
+		}
+	}
+	status, err := commitStatus(commit)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +121,25 @@ func (a *App) submit(name string, args []string, transient map[string][]byte, en
 		return nil, fmt.Errorf("transaction %s failed to commit: %s", status.TransactionID, status.Code)
 	}
 	return &txResult{TxID: tx.TransactionID(), Block: status.BlockNumber, Result: asJSON(tx.Result())}, nil
+}
+
+// commitStatus waits for the transaction to commit. It asks in rounds rather
+// than once: if a DRUNIX 1.0.0 committing peer's notifier stalls (see
+// docs/drunix/findings.md) a waiting question is never answered, but a fresh
+// question after the commit is answered from the ledger at once.
+func commitStatus(commit *client.Commit) (*client.Status, error) {
+	deadline := time.Now().Add(time.Minute)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		status, err := commit.StatusWithContext(ctx)
+		cancel()
+		if err == nil || time.Now().After(deadline) {
+			return status, err
+		}
+		if c := grpcstatus.Code(err); c != codes.DeadlineExceeded && c != codes.Canceled && c != codes.Unavailable {
+			return nil, err
+		}
+	}
 }
 
 func (a *App) handleSubmit(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +310,7 @@ func (h *hub) unsubscribe(c chan []byte) {
 }
 
 func (a *App) streamEvents(ctx context.Context) {
-	events, err := a.network.ChaincodeEvents(ctx, a.cfg.Chaincode)
+	events, err := a.eventsNet.ChaincodeEvents(ctx, a.cfg.Chaincode)
 	if err != nil {
 		log.Printf("chaincode events: %v", err)
 		return

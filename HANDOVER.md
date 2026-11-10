@@ -10,7 +10,7 @@ from the repo root. Nothing was pushed to GitHub.
 |---|---|---|---|---|
 | 1 | Chaincode: InvoiceRegistry, Marketplace, ReceivableToken, Settlement | `chaincode/rasid/` | Go | 14 unit tests pass; ran on a local Fabric 2.5 network |
 | 2 | Mock GST IRP signer (signed QR JWTs) | `tools/mock-irp/` | Go | Output verified by the chaincode's signature check |
-| 3 | AI fraud and risk oracle | `ai/risk-service/` | Python (stdlib) | 10 tests pass; synthetic evaluation included |
+| 3 | AI fraud and risk oracle | `ai/risk-service/` | Python (stdlib) | Trained model rasid-gam-1.0; 27 tests pass; see its MODEL_CARD.md |
 | 4 | Chaincode deploy script for DRUNIX | `network/deploy-chaincode.sh` | Bash | Syntax-checked; the local equivalent (`network/local/deploy.sh`) runs |
 | 5 | REST gateway + risk bridge (Fabric Gateway SDK) | `app/gateway/` | Go | Ran live on the local Fabric network, risk bridge included |
 | 6 | Settlement adapters (mock UPI/IMPS/NEFT/RTGS/e-NACH) | `adapters/payments/` | Python (stdlib) | 6 tests pass |
@@ -24,6 +24,9 @@ from the repo root. Nothing was pushed to GitHub.
 | 14 | Live-network demo | `scripts/demo-network.sh` | Bash | Runs the full flow to CLOSED through 5 gateways |
 | 15 | Live-network console | `scripts/console-network.sh` | Bash | Serves the console; each user signs in at their organisation's gateway |
 | 16 | Devnet console with AI scoring | `scripts/console-devnet.sh` | Bash | Starts the devnet and the AI risk service; every new invoice is scored by the AI |
+| 17 | RASID on NPCI's DRUNIX test network | `network/drunix/` | Bash | setup, up, deploy, inspect, down; a fresh network to a deployed RASID in under two minutes |
+| 18 | DRUNIX demo, console and benchmark | `scripts/demo-drunix.sh`, `scripts/console-drunix.sh`, `benchmarks/caliper/run-drunix.sh` | Bash | Full flow to CLOSED on DRUNIX through 5 gateways; console serves; Caliper smoke run |
+| 19 | DRUNIX findings and upstream fix | `docs/drunix/` | Markdown + patch | Six findings; the deadlock fix comes with tests but was not compiled here |
 
 Each component folder has its own README with what it does and how to run it.
 
@@ -152,6 +155,32 @@ Added with sign-in and per-party screens (18 Oct):
 - **Gateway:** `LEDGER_NAME` names the network in the console's bar (default
   "Fabric network"); `CONNECT_SRC` lists the gateways the console may call.
 
+## DRUNIX (10 Nov)
+
+- **What runs:** DRUNIX's test network (npci/drunix at `8090e0c`) with two
+  organisations. Org1MSP is NPCI (operator and risk oracle). Org2MSP is Citi,
+  which also enrols the supplier and buyer through its supply-chain finance
+  programme. Each has a lite peer, a committing peer, a validation service,
+  YugabyteDB and KeyDB. RASID runs as a chaincode service (`rasid-cc`
+  container) with the endorsement policy `AND(Org1, Org2)`.
+- **Scripts:** `network/drunix/setup.sh` (once), `up.sh`, `deploy.sh`,
+  `inspect.sh`, `down.sh`; `scripts/demo-drunix.sh` and `console-drunix.sh`
+  are the network demo and console with `RASID_NET=drunix`
+  (`scripts/lib-network.sh` picks peers, MSPs and the ledger name from it).
+- **Code changes it needed:**
+  - Chaincode stores plain strings as JSON strings, because YugabyteDB keeps
+    values in a `jsonb` column. A devnet test checks every stored value is JSON.
+  - The gateway reads events and commit status from the committing peer
+    (`EVENTS_PEER_ENDPOINT`), because lite peers keep no ledger.
+  - Commit status is asked in rounds.
+  - The console names Org1MSP and Org2MSP.
+- **DRUNIX bugs:** the main one is a committing-peer deadlock. The scripts
+  avoid it by restarting lite peers before committing peers, and by approving
+  one organisation per block. Details, and the other five findings, are in
+  `docs/drunix/findings.md`. The fix in `docs/drunix/config-notifier-deadlock.patch`
+  has tests but was not compiled here. Run DRUNIX's `go test` on it before
+  proposing it upstream.
+
 ## Sign-in and roles
 
 - The devnet has six demo accounts (`npci`, `risk`, `msme`, `buyer`, `citi`,
@@ -183,12 +212,13 @@ Added with sign-in and per-party screens (18 Oct):
 
 ## Not done yet
 
-- Nothing has run on DRUNIX itself. The local network is stock Fabric 2.5, so
-  DRUNIX-only features (lite peers, stateless validation, KeyDB, YugabyteDB
-  state database, Falcon) are untested.
-- The risk service is a rule-and-graph baseline, not a trained model. Its
-  synthetic results (precision 0.98, recall 1.0 with re-scoring) come from data
-  shaped like its own detectors, so they prove the plumbing, not accuracy.
+- DRUNIX ran on one machine (its Docker test network), not on separate hosts;
+  Falcon is not in the public DRUNIX repository, so it is untested.
+- The DRUNIX scripts are tested on Linux. On a Mac, `setup.sh` builds DRUNIX's
+  tools with `make` instead of copying them from images; that path has not
+  been run yet.
+- The fraud model is trained on simulated networks; there is no public
+  labelled GST fraud data to measure real-world accuracy.
 - The risk bridge sends no document numbers (they are not on the ledger), so
   near-duplicate checks need the supplier's platform to post invoices to the
   risk service directly.

@@ -99,9 +99,10 @@ controls. The server enforces this as well: a request without a sign-in gets
 allow.
 
 To watch the AI catch a re-issued invoice, click "Re-issue the last one
-under a new number" in the msme tab and register it. The AI scores it about
-50, as a near-duplicate of the first. In the risk tab, override it to 80 and
-the ledger will refuse to list it, because the limit for e-invoices is 70.
+under a new number" in the msme tab and register it. The AI scores it 76, as
+a near-duplicate of the first, and the ledger refuses to list it, because the
+limit for e-invoices is 70. The first invoice scores 38 and lists normally.
+The risk desk can still override a score in either direction.
 
 Each invoice's detail ends with its ledger trail: every version the ledger
 committed, with the transaction that wrote it. The bar at the top shows the
@@ -170,6 +171,47 @@ its awards, and NPCI's adapter pays out the holders. When you are done,
 
 If macOS asks whether `peer` or `orderer` may accept incoming connections,
 either answer works; everything talks over localhost.
+
+## 6. Optional: on NPCI's DRUNIX (Docker)
+
+This runs RASID on DRUNIX's own test network: per organisation a lite peer,
+a committing peer, a validation service, YugabyteDB and KeyDB, plus an
+orderer. It needs Docker Desktop running (give it at least 6 GB of memory in
+Settings, Resources), Go, git and make. The first setup downloads DRUNIX,
+builds its command-line tools and pulls about 2.5 GB of images, so allow 15
+minutes; after that, a fresh network takes about two minutes.
+
+```bash
+bash network/drunix/setup.sh
+bash network/drunix/up.sh
+bash network/drunix/deploy.sh
+bash scripts/demo-drunix.sh
+bash network/drunix/inspect.sh
+```
+
+`setup.sh` puts DRUNIX in `~/drunix` (set `DRUNIX_HOME` to use another
+folder). The demo ends CLOSED, like the local one. `inspect.sh` shows which
+container does what, the ledger height on each committing peer, the latest
+receivables read straight from each organisation's YugabyteDB with SQL, and
+the private data in KeyDB.
+
+For the browser, run `bash scripts/console-drunix.sh` and open
+http://127.0.0.1:8101, signing in as npci, risk, msme, buyer or citi
+(password `rasid`). The bar at the top says "DRUNIX network".
+
+To measure it, run `bash benchmarks/caliper/run-drunix.sh` (needs Node.js 18
+or later). It writes `benchmarks/caliper/report.html`. The benchmark adds a
+few thousand invoices, so before a live demo start again with `down.sh`,
+`up.sh` and `deploy.sh`.
+
+`bash network/drunix/down.sh` stops the network and deletes its data. Logs are
+in `/tmp/rasid-drunix/logs/`; `last-run/` there has the gateway, AI and
+adapter logs from the latest demo or console run.
+
+On a Mac with Apple silicon, Docker runs DRUNIX's images through emulation,
+so everything is slower than on an Intel machine but works the same.
+[docs/drunix/findings.md](docs/drunix/findings.md) explains the workarounds the
+scripts make for DRUNIX 1.0.0.
 
 ## If something fails
 

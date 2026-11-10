@@ -152,4 +152,24 @@ func TestLifecycleOverHTTP(t *testing.T) {
 	if code != 200 || len(page["records"].([]any)) != 1 {
 		t.Fatalf("list: %d %v", code, page)
 	}
+	assertAllJSON(t, s)
+}
+
+// assertAllJSON: DRUNIX keeps chaincode state in a YugabyteDB JSON column,
+// and its committing peer stops on a value that is not JSON. Every value the
+// chaincode writes, public or private, must be JSON.
+func assertAllJSON(t *testing.T, s *server) {
+	t.Helper()
+	for k, v := range s.world.state {
+		if !json.Valid(v) {
+			t.Errorf("state value for %q is not JSON: %.60q", k, v)
+		}
+	}
+	for c, kv := range s.world.private {
+		for k, v := range kv {
+			if !json.Valid(v) {
+				t.Errorf("private value %s/%q is not JSON: %.60q", c, k, v)
+			}
+		}
+	}
 }

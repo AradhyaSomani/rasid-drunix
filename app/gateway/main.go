@@ -48,7 +48,12 @@ type config struct {
 	LoginUsers    string // "name:password,..." turns on sign-in for the console
 	LoginLabel    string // how the console names this gateway's identity, e.g. "Citi"
 	ConnectSrc    string // gateways the console may call, for its content security policy
-	LedgerName    string // how the console names the network, e.g. "DRUNIX network"
+	// On DRUNIX a lite peer endorses but keeps no ledger, so it cannot stream
+	// events. EVENTS_PEER_ENDPOINT names the org's committing peer, which then
+	// streams events and answers commit-status questions directly.
+	EventsPeerEndpoint  string
+	EventsPeerHostAlias string
+	LedgerName          string // how the console names the network, e.g. "DRUNIX network"
 }
 
 func env(k, def string) string {
@@ -60,23 +65,25 @@ func env(k, def string) string {
 
 func loadConfig() config {
 	return config{
-		PeerEndpoint:  env("PEER_ENDPOINT", "localhost:7051"),
-		PeerHostAlias: env("PEER_HOST_ALIAS", "peer0.npci.rasid"),
-		TLSCertPath:   env("PEER_TLS_CA", "crypto/peer-tls-ca.pem"),
-		MSPID:         env("MSP_ID", "NPCIMSP"),
-		CertPath:      env("CERT_PATH", "crypto/cert.pem"),
-		KeyPath:       env("KEY_PATH", "crypto/key.pem"),
-		Channel:       env("CHANNEL", "rasid"),
-		Chaincode:     env("CHAINCODE", "rasid"),
-		Listen:        env("LISTEN", ":8080"),
-		RiskURL:       os.Getenv("RISK_URL"),
-		OperatorMSP:   env("OPERATOR_MSP", "NPCIMSP"),
-		CORSOrigin:    os.Getenv("CORS_ORIGIN"),
-		WebDir:        os.Getenv("WEB_DIR"),
-		LoginUsers:    os.Getenv("LOGIN_USERS"),
-		LoginLabel:    os.Getenv("LOGIN_LABEL"),
-		ConnectSrc:    env("CONNECT_SRC", "'self' http://127.0.0.1:* http://localhost:*"),
-		LedgerName:    env("LEDGER_NAME", "Fabric network"),
+		PeerEndpoint:        env("PEER_ENDPOINT", "localhost:7051"),
+		PeerHostAlias:       env("PEER_HOST_ALIAS", "peer0.npci.rasid"),
+		TLSCertPath:         env("PEER_TLS_CA", "crypto/peer-tls-ca.pem"),
+		MSPID:               env("MSP_ID", "NPCIMSP"),
+		CertPath:            env("CERT_PATH", "crypto/cert.pem"),
+		KeyPath:             env("KEY_PATH", "crypto/key.pem"),
+		Channel:             env("CHANNEL", "rasid"),
+		Chaincode:           env("CHAINCODE", "rasid"),
+		Listen:              env("LISTEN", ":8080"),
+		RiskURL:             os.Getenv("RISK_URL"),
+		OperatorMSP:         env("OPERATOR_MSP", "NPCIMSP"),
+		CORSOrigin:          os.Getenv("CORS_ORIGIN"),
+		WebDir:              os.Getenv("WEB_DIR"),
+		LoginUsers:          os.Getenv("LOGIN_USERS"),
+		LoginLabel:          os.Getenv("LOGIN_LABEL"),
+		ConnectSrc:          env("CONNECT_SRC", "'self' http://127.0.0.1:* http://localhost:*"),
+		LedgerName:          env("LEDGER_NAME", "Fabric network"),
+		EventsPeerEndpoint:  os.Getenv("EVENTS_PEER_ENDPOINT"),
+		EventsPeerHostAlias: os.Getenv("EVENTS_PEER_HOST_ALIAS"),
 	}
 }
 
@@ -108,10 +115,28 @@ func main() {
 
 	network := gw.GetNetwork(cfg.Channel)
 	app := &App{
-		cfg:      cfg,
-		network:  network,
-		contract: network.GetContract(cfg.Chaincode),
-		events:   newHub(),
+		cfg:       cfg,
+		network:   network,
+		contract:  network.GetContract(cfg.Chaincode),
+		events:    newHub(),
+		eventsNet: network,
+	}
+	if cfg.EventsPeerEndpoint != "" {
+		ecfg := cfg
+		ecfg.PeerEndpoint, ecfg.PeerHostAlias = cfg.EventsPeerEndpoint, cfg.EventsPeerHostAlias
+		econn, err := grpcConnection(ecfg)
+		if err != nil {
+			log.Fatalf("connect to events peer: %v", err)
+		}
+		defer econn.Close()
+		egw, err := client.Connect(id, client.WithSign(sign), client.WithHash(hash.SHA256), client.WithClientConnection(econn))
+		if err != nil {
+			log.Fatalf("connect events gateway: %v", err)
+		}
+		defer egw.Close()
+		app.eventsNet = egw.GetNetwork(cfg.Channel)
+		app.ledgerGw = egw
+		log.Printf("events and commit status from %s", cfg.EventsPeerEndpoint)
 	}
 	if cfg.LoginUsers != "" {
 		users, err := parseUsers(cfg.LoginUsers)

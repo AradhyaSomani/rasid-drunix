@@ -1,0 +1,180 @@
+diff --git a/internal/pkg/gateway/commit/confignotifier.go b/internal/pkg/gateway/commit/confignotifier.go
+index 75fcd1b..8f2120f 100644
+--- a/internal/pkg/gateway/commit/confignotifier.go
++++ b/internal/pkg/gateway/commit/confignotifier.go
+@@ -63,11 +63,22 @@ func (notifier *statusNotifier) listenersForConfigTxn(peerID string) statusListe
+ }
+ 
+ func (notifier *statusNotifier) notifyConfig(event *Status) {
++	// Hold configLock: lite peers register listeners from gRPC goroutines while
++	// blocks are notified, and an unguarded map iteration races with them.
++	notifier.configLock.Lock()
++	defer notifier.configLock.Unlock()
++
+ 	listenerNames := []string{}
+ 	for peerID, listeners := range notifier.listenersByPeerID {
+ 		listenerNames = append(listenerNames, fmt.Sprintf("[%s:%d]", peerID, len(listeners)))
+ 		for listener := range listeners {
+-			listener.receive(event)
++			// The channel is unbuffered. A listener whose lite peer has gone
++			// (restarted or disconnected) has no reader, so a plain send would
++			// block the block notifier for good, and with it every later commit
++			// once the ledger's commit-notification buffer fills.
++			if !listener.receiveUnlessDone(event) {
++				notifier.removeConfigListener(peerID, listener)
++			}
+ 		}
+ 	}
+ 	logger.Infof("Config Listeners : [%s]\n", strings.Join(listenerNames, ","))
+diff --git a/internal/pkg/gateway/commit/confignotifier_test.go b/internal/pkg/gateway/commit/confignotifier_test.go
+new file mode 100644
+index 0000000..1894b29
+--- /dev/null
++++ b/internal/pkg/gateway/commit/confignotifier_test.go
+@@ -0,0 +1,90 @@
++/*
++Copyright National Payments Corporation of India. All Rights Reserved.
++
++SPDX-License-Identifier: Apache-2.0
++*/
++
++package commit
++
++import (
++	"testing"
++	"time"
++
++	cp "github.com/hyperledger/fabric-protos-go/common"
++	"github.com/hyperledger/fabric-protos-go/peer"
++	"github.com/npci/drunix/core/ledger"
++	"github.com/stretchr/testify/require"
++)
++
++func lifecycleBlock(number uint64, txIDs ...string) *ledger.CommitNotification {
++	block := &ledger.CommitNotification{BlockNumber: number}
++	for _, txID := range txIDs {
++		block.TxsInfo = append(block.TxsInfo, &ledger.CommitNotificationTxInfo{
++			TxType:         cp.HeaderType_ENDORSER_TRANSACTION,
++			TxID:           txID,
++			ValidationCode: peer.TxValidationCode_VALID,
++			ChaincodeID:    &peer.ChaincodeID{Name: "_lifecycle"},
++		})
++	}
++	return block
++}
++
++// A lite peer that restarts leaves its old config listener registered until the
++// next block. Two approvals in one block used to block the notifier on the
++// second send to that listener, and with it every later commit on the peer.
++func TestConfigNotifierSkipsListenersThatAreGone(t *testing.T) {
++	notifier := newStatusNotifier()
++
++	goneDone := make(chan struct{})
++	gone := notifier.registerConfigListener(goneDone, "peer0.org1.example.com")
++	liveDone := make(chan struct{})
++	defer close(liveDone)
++	live := notifier.registerConfigListener(liveDone, "peer0.org1.example.com")
++
++	received := make(chan *Status, 4)
++	go func() {
++		for event := range live {
++			received <- event
++		}
++	}()
++	// The old stream reads nothing more and ends.
++	close(goneDone)
++	_ = gone
++
++	finished := make(chan struct{})
++	go func() {
++		notifier.ReceiveBlock(lifecycleBlock(3, "approve-org1", "approve-org2"))
++		notifier.ReceiveBlock(lifecycleBlock(4, "commit"))
++		close(finished)
++	}()
++
++	select {
++	case <-finished:
++	case <-time.After(5 * time.Second):
++		t.Fatal("block notifier is stuck sending to a lite peer that has gone")
++	}
++	require.Len(t, received, 3, "the connected lite peer gets every config event")
++}
++
++// Registering a listener while a config block is being notified must not race.
++func TestConfigNotifierRegistersWhileNotifying(t *testing.T) {
++	notifier := newStatusNotifier()
++	done := make(chan struct{})
++	defer close(done)
++
++	registered := make(chan struct{})
++	go func() {
++		defer close(registered)
++		for i := 0; i < 100; i++ {
++			events := notifier.registerConfigListener(done, "peer0.org2.example.com")
++			go func() {
++				for range events {
++				}
++			}()
++		}
++	}()
++	for i := uint64(0); i < 100; i++ {
++		notifier.ReceiveBlock(lifecycleBlock(i, "tx"))
++	}
++	<-registered
++}
+diff --git a/internal/pkg/gateway/commit/statusnotifier.go b/internal/pkg/gateway/commit/statusnotifier.go
+index 12c8ca2..18ba9cc 100644
+--- a/internal/pkg/gateway/commit/statusnotifier.go
++++ b/internal/pkg/gateway/commit/statusnotifier.go
+@@ -172,3 +172,14 @@ func (listener *statusListener) close() {
+ func (listener *statusListener) receive(event *Status) {
+ 	listener.notifyChannel <- event
+ }
++
++// receiveUnlessDone delivers the event, or gives up once the listener is done.
++// It reports whether the event was delivered.
++func (listener *statusListener) receiveUnlessDone(event *Status) bool {
++	select {
++	case listener.notifyChannel <- event:
++		return true
++	case <-listener.done:
++		return false
++	}
++}
+diff --git a/internal/pkg/gateway/configevents.go b/internal/pkg/gateway/configevents.go
+index e533e82..bef44c6 100644
+--- a/internal/pkg/gateway/configevents.go
++++ b/internal/pkg/gateway/configevents.go
+@@ -40,15 +40,24 @@ func (gs *Server) ConfigEvents(request *gp.ConfigEventsRequest, stream gp.Gatewa
+ 		return toRpcError(err, codes.Aborted)
+ 	}
+ 
+-	for range events {
+-		logger.Infof("sending config event response : %+v", request)
+-		if err := stream.Send(&gp.ConfigEventsResponse{ChannelId: request.ChannelId}); err != nil {
+-			if err == io.EOF {
+-				// Stream closed by the client
+-				return status.Error(codes.Canceled, err.Error())
++	for {
++		select {
++		case <-stream.Context().Done():
++			// The lite peer went away. Returning closes notifyDone, so the
++			// notifier stops sending to this listener and drops it.
++			return status.FromContextError(stream.Context().Err()).Err()
++		case _, ok := <-events:
++			if !ok {
++				return status.Error(codes.Internal, "events channel closed")
++			}
++			logger.Infof("sending config event response : %+v", request)
++			if err := stream.Send(&gp.ConfigEventsResponse{ChannelId: request.ChannelId}); err != nil {
++				if err == io.EOF {
++					// Stream closed by the client
++					return status.Error(codes.Canceled, err.Error())
++				}
++				return err
+ 			}
+-			return err
+ 		}
+ 	}
+-	return status.Error(codes.Internal, "events channel closed")
+ }

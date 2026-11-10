@@ -17,7 +17,8 @@ const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls)
 function stored(store, key, fallback) { try { return JSON.parse(store.getItem(key)) ?? fallback; } catch { return fallback; } }
 function keep(store, key, v) { try { v == null ? store.removeItem(key) : store.setItem(key, JSON.stringify(v)); } catch { /* storage off */ } }
 
-const ORG = { NPCIMSP: "NPCI", CitiMSP: "Citi", NbfcMSP: "NBFC", SupplierBankMSP: "Supplier bank", BuyerBankMSP: "Buyer bank", BankAMSP: "Bank A" };
+const ORG = { NPCIMSP: "NPCI", CitiMSP: "Citi", NbfcMSP: "NBFC", SupplierBankMSP: "Supplier bank", BuyerBankMSP: "Buyer bank", BankAMSP: "Bank A",
+  Org1MSP: "NPCI (DRUNIX Org1)", Org2MSP: "Citi (DRUNIX Org2)" };
 const org = msp => ORG[msp] || String(msp).replace(/MSP$/, "");
 const ROLE = { operator: "Network operator", risk_oracle: "Risk desk", supplier: "Supplier", buyer: "Buyer", financier: "Financier" };
 const ROLE_ORDER = ["operator", "supplier", "risk_oracle", "buyer", "financier"];
@@ -31,7 +32,8 @@ const MANUAL = "risk-desk-manual";
 const byAI = r => !!r.risk && r.risk.modelVersion !== MANUAL;
 const REASON = { CIRCULAR_TRADE: "circular trading", NEAR_DUPLICATE: "near-duplicate of another invoice", VELOCITY_SPIKE: "sudden spike in invoices",
   NEW_PAIR_LARGE: "large first invoice between these parties", BUYER_PAYS_LATE: "buyer pays late", ROUND_AMOUNT: "round amount",
-  NOT_E_INVOICE: "not an e-invoice", OK: "nothing flagged" };
+  NOT_E_INVOICE: "not an e-invoice", INFLATED_AMOUNT: "amount far above this relationship's usual",
+  UNPROVEN_BUYER: "buyer has no track record", THIN_HISTORY: "supplier is new to the network", OK: "nothing flagged" };
 const reasons = r => (r.risk.reasonCodes || []).map(c => REASON[c] || c).join(", ") || "nothing flagged";
 const BID = { SEALED: "Sealed", AWARDED: "Awarded", LOST: "Not awarded", WITHDRAWN: "Withdrawn" };
 const EVENT = { ReceivableRegistered: "Invoice registered", ReceivableAccepted: "Buyer accepted", ReceivableRejected: "Buyer rejected",
@@ -48,7 +50,7 @@ let ME = null;
 let RS = [];
 let selected = null, shownSig = "", es = null;
 let HEALTH = {};        // what /health says about the ledger this tab talks to
-let HEIGHT = 0, LIVE = "connecting", LOADED = false;
+let HEIGHT = 0, LIVE = "connecting", LOADED = false, MORE = false;
 const FILTER = { q: "", status: "" };
 const known = new Set(), FEED = [];
 
@@ -198,7 +200,7 @@ $("signOut").onclick = signOut;
 
 function signedOut(msg) {
   S = ME = selected = null;
-  shownSig = ""; RS = []; FEED.length = 0; known.clear(); LOADED = false; HEIGHT = 0; LIVE = "connecting";
+  shownSig = ""; RS = []; FEED.length = 0; known.clear(); LOADED = false; MORE = false; HEIGHT = 0; LIVE = "connecting";
   stopStream();
   keep(sessionStorage, "rasid-session", null);
   showLogin(msg);
@@ -336,7 +338,7 @@ function renderKpis() {
   const lakh = p => p >= 1e9 ? "₹" + (p / 1e9).toLocaleString("en-IN", { maximumFractionDigits: 2 }) + " cr" : p >= 1e7 ? "₹" + (p / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 2 }) + " lakh" : rupees(p);
   let k = [];
   if (ME.role === "operator") {
-    k = [[count(RS.length), "invoices on the ledger"], [lakh(sum(RS, r => r.fundedPaise)), "financed to MSMEs"],
+    k = [[count(RS.length) + (MORE ? "+" : ""), MORE ? "invoices (latest shown)" : "invoices on the ledger"], [lakh(sum(RS, r => r.fundedPaise)), "financed to MSMEs"],
       [count(RS.filter(r => ["FUNDED", "OVERDUE", "DEFAULTED", "REPAID"].includes(r.status)).length), "in settlement"],
       [count(RS.filter(r => r.status === "CLOSED").length), "closed"]];
   } else if (ME.role === "risk_oracle") {
@@ -439,6 +441,7 @@ async function load() {
   let page;
   try { page = await query("InvoiceRegistry:ListReceivables", "", 200, ""); } catch (e) { if (S) toast(e.message); return; }
   const rs = page.records || [];
+  MORE = rs.length >= 200; // the ledger holds more than this page; counts below cover the page
   const have = new Set(rs.map(r => r.id));
   // Receivables beyond the first page that this tab has seen through events.
   const extra = await Promise.all([...known].filter(id => !have.has(id)).map(id => query("InvoiceRegistry:GetReceivable", id).catch(() => null)));

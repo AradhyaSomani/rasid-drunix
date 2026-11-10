@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs the RASID flow on the local Fabric network (network/local up.sh +
-# deploy.sh first). Every org acts through its own gateway and certificate:
-# NPCI operator, NPCI risk oracle (with the AI risk bridge), BankA supplier,
-# BankA buyer, Citi financier. Needs Go 1.24+, Python 3.10+, curl, jq.
+# deploy.sh first), or on DRUNIX with RASID_NET=drunix (see demo-drunix.sh).
+# Every party acts through its own gateway and certificate: NPCI operator,
+# NPCI risk oracle (with the AI risk bridge), supplier, buyer, Citi financier.
+# Needs Go 1.24+, Python 3.10+, curl, jq.
 #   WORK=/tmp/rasid-net bash scripts/demo-network.sh
 set -euo pipefail
 source "$(dirname "$0")/lib-network.sh"
@@ -21,7 +22,7 @@ wait_for() { # id jq-condition label
   echo "timed out waiting for $3" >&2; return 1
 }
 
-step "Starting one gateway per identity, the risk service and settlement adapters"
+step "Starting one gateway per identity on the $LEDGER, the risk service and settlement adapters"
 start_stack
 
 step "NPCI trusts the (mock) GST IRP key"
@@ -34,7 +35,7 @@ jq -n --arg s "$SELLER" --arg b "$BUYER" --arg d "$(date -u +%d/%m/%Y)" --arg n 
   '{SellerGstin:$s,BuyerGstin:$b,DocNo:$n,DocTyp:"INV",DocDt:$d,TotInvVal:1000000.00,ItemCnt:3,MainHsnCode:"8481"}' >"$TMP/invoice.json"
 QR=$("$TMP/mock-irp" sign -key "$TMP/irp/irp-private.pem" -invoice "$TMP/invoice.json")
 
-step "MSME (via BankA) registers a ₹10,00,000 e-invoice due $DUE"
+step "MSME (enrolled by $SUP_MSP) registers a ₹10,00,000 e-invoice due $DUE"
 ID=$(tx $SUP InvoiceRegistry/RegisterEInvoice "$(jq -n --arg q "$QR" --arg d "$DUE" '{args:[$q,$d]}')" | jq -r .result.id)
 echo "  receivable $ID"
 echo "  re-registering the same invoice:"

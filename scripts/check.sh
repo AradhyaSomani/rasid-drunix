@@ -43,13 +43,21 @@ gofmt_all() {
   if [ -n "$bad" ]; then echo "not gofmt-formatted: $bad"; return 1; fi
 }
 vet_all() { local m; for m in $GO_MODULES; do (cd "$m" && go vet ./...) || return 1; done; }
-bash_syntax() { local f; for f in scripts/*.sh network/*.sh network/local/*.sh network/drunix/*.sh; do [ -f "$f" ] && { bash -n "$f" || return 1; }; done; return 0; }
-shellcheck_all() { shellcheck -S error scripts/*.sh network/*.sh network/local/*.sh $(ls network/drunix/*.sh 2>/dev/null); }
+bash_syntax() { local f; for f in scripts/*.sh network/*.sh network/local/*.sh network/drunix/*.sh benchmarks/caliper/*.sh benchmarks/caliper/networks/*.sh; do [ -f "$f" ] && { bash -n "$f" || return 1; }; done; return 0; }
+shellcheck_all() { shellcheck -S error scripts/*.sh network/*.sh network/local/*.sh network/drunix/*.sh benchmarks/caliper/*.sh benchmarks/caliper/networks/*.sh; }
 js_syntax() { node --check app/web/app.js; }
 no_secrets() {
-  local hits
-  hits=$(grep -rIl --exclude-dir=node_modules --exclude-dir=.git -E -- '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' . | grep -v '_test\.go$' || true)
-  hits="$hits$(find . -path ./tests/ui/node_modules -prune -o \( -name '*.pem' -o -name '*.key' -o -name '.env' \) -print | grep -v node_modules || true)"
+  # In a git checkout, look at what git would commit (tracked files and new
+  # files that .gitignore doesn't exclude); generated keys such as the
+  # benchmark's mock IRP key are ignored on purpose. Elsewhere, every file.
+  local files hits
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    files=$(git ls-files -co --exclude-standard)
+  else
+    files=$(find . -name node_modules -prune -o -type f -print | sed 's|^\./||')
+  fi
+  hits=$(printf '%s\n' "$files" | grep -E '\.(pem|key)$|(^|/)\.env$' || true)
+  hits="$hits$(printf '%s\n' "$files" | grep -v '_test\.go$' | tr '\n' '\0' | xargs -0 grep -IlE -- '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' 2>/dev/null || true)"
   if [ -n "$hits" ]; then echo "private keys or secrets in the tree:"; echo "$hits"; return 1; fi
 }
 run "gofmt" gofmt_all

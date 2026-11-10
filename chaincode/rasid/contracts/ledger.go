@@ -44,6 +44,29 @@ func putJSON(ctx contractapi.TransactionContextInterface, key string, v any) err
 	return ctx.GetStub().PutState(key, b)
 }
 
+// putString stores a plain string as a JSON string. DRUNIX's SQL state
+// database (YugabyteDB) keeps chaincode values in a JSON column and its
+// committing peer stops on a value that is not JSON, so RASID stores every
+// value as JSON, never raw bytes.
+func putString(ctx contractapi.TransactionContextInterface, key, v string) error {
+	b, _ := json.Marshal(v)
+	return ctx.GetStub().PutState(key, b)
+}
+
+// getString reads a value written by putString. Values written before the
+// switch to JSON (raw bytes) are returned as they are.
+func getString(ctx contractapi.TransactionContextInterface, key string) (string, bool, error) {
+	b, err := ctx.GetStub().GetState(key)
+	if err != nil || b == nil {
+		return "", false, err
+	}
+	var s string
+	if len(b) > 0 && b[0] == '"' && json.Unmarshal(b, &s) == nil {
+		return s, true, nil
+	}
+	return string(b), true, nil
+}
+
 func getReceivable(ctx contractapi.TransactionContextInterface, id string) (*Receivable, error) {
 	key, err := compositeKey(ctx, keyReceivable, id)
 	if err != nil {
@@ -112,14 +135,14 @@ func claimUTR(ctx contractapi.TransactionContextInterface, utr, receivableID str
 	if err != nil {
 		return err
 	}
-	existing, err := ctx.GetStub().GetState(key)
+	existing, found, err := getString(ctx, key)
 	if err != nil {
 		return err
 	}
-	if existing != nil {
+	if found {
 		return fmt.Errorf("UTR %s was already used for receivable %s", utr, existing)
 	}
-	return ctx.GetStub().PutState(key, []byte(receivableID))
+	return putString(ctx, key, receivableID)
 }
 
 // emit sets the transaction's chaincode event. Fabric keeps only one event per

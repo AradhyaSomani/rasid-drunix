@@ -56,7 +56,7 @@ func (c *InvoiceRegistry) SetIRPPublicKey(ctx contractapi.TransactionContextInte
 	if err != nil {
 		return err
 	}
-	return ctx.GetStub().PutState(key, []byte(pemKey))
+	return putString(ctx, key, pemKey)
 }
 
 // SetRiskThresholds sets the maximum AI risk score allowed for listing.
@@ -89,14 +89,14 @@ func (c *InvoiceRegistry) RegisterEInvoice(ctx contractapi.TransactionContextInt
 	if err != nil {
 		return nil, err
 	}
-	pemKey, err := ctx.GetStub().GetState(keyKey)
+	pemKey, found, err := getString(ctx, keyKey)
 	if err != nil {
 		return nil, err
 	}
-	if pemKey == nil {
+	if !found {
 		return nil, fmt.Errorf("no IRP public key registered for kid %q", kid)
 	}
-	pub, err := ParseRSAPublicKeyPEM(string(pemKey))
+	pub, err := ParseRSAPublicKeyPEM(pemKey)
 	if err != nil {
 		return nil, err
 	}
@@ -119,9 +119,9 @@ func (c *InvoiceRegistry) RegisterEInvoice(ctx contractapi.TransactionContextInt
 	if err != nil {
 		return nil, err
 	}
-	if existing, err := ctx.GetStub().GetState(irnKey); err != nil {
+	if existing, found, err := getString(ctx, irnKey); err != nil {
 		return nil, err
-	} else if existing != nil {
+	} else if found {
 		return nil, fmt.Errorf("DUPLICATE: IRN already registered as receivable %s", existing)
 	}
 	r, err := newReceivable(ctx, caller, inv.SellerGstin, inv.BuyerGstin, inv.DocNo, invoiceDate, dueDate, inv.AmountPaise())
@@ -130,7 +130,7 @@ func (c *InvoiceRegistry) RegisterEInvoice(ctx contractapi.TransactionContextInt
 	}
 	r.EInvoice = true
 	r.IRNHash = irnHash
-	if err := ctx.GetStub().PutState(irnKey, []byte(r.ID)); err != nil {
+	if err := putString(ctx, irnKey, r.ID); err != nil {
 		return nil, err
 	}
 	return r, saveNew(ctx, r)

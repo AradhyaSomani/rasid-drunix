@@ -105,8 +105,10 @@ Access is checked in three places, and the first is the one that counts:
 | `app/web/` | Web console: sign-in, one screen per party |
 | `adapters/payments/` | Mock UPI, IMPS, NEFT, RTGS and e-NACH settlement adapters |
 | `analytics/` | Event indexer and SQL for YugabyteDB or PostgreSQL |
+| `network/drunix/` | Runs RASID on NPCI's DRUNIX test network: setup, up, deploy, inspect, down |
 | `network/local/` | A 3-org Fabric 2.5 network (NPCI, BankA, Citi) without Docker |
-| `network/deploy-chaincode.sh` | Chaincode deployment for a DRUNIX network |
+| `network/deploy-chaincode.sh` | Chaincode deployment for any Fabric-compatible network |
+| `docs/drunix/` | What we found running on DRUNIX, and a fix to send upstream |
 | `tools/mock-irp/` | Mock GST IRP that issues signed e-invoice QR codes |
 | `tools/issue-identity/` | Issues certificates carrying RASID roles and GSTINs |
 | `benchmarks/caliper/` | Hyperledger Caliper workloads and results |
@@ -145,12 +147,20 @@ Fabric network.
 
 ## Results so far
 
+- **On DRUNIX:** on NPCI's DRUNIX test network, brought up from scratch, five
+  gateways (one per role) ran the full flow to CLOSED in under 30 seconds.
+  Lite peers endorsed it, committing peers committed it, YugabyteDB holds the
+  state as SQL rows, and the sealed bid went through KeyDB as private data.
+  See [Where DRUNIX comes in](#where-drunix-comes-in).
 - **Checks:** `bash scripts/check.sh` runs 16 checks and must pass after
   every change; GitHub Actions runs it on every push. They cover formatting,
   `go vet`, shell and JavaScript syntax, a scan for committed private keys,
-  57 unit tests (14 chaincode, 14 devnet, 9 gateway, 10 risk service, 6
+  74 unit tests (14 chaincode, 14 devnet, 9 gateway, 27 risk service, 6
   adapters, 4 indexer) under Go's race detector, the end-to-end demo, and a
   headless-browser run of the console from registration to CLOSED.
+- **Fraud model:** the trained model rasid-gam-1.0 reaches ROC-AUC 0.95 and
+  0.90 precision on held-out simulated networks, against 0.80 and 0.36 for the
+  old rules. See [`ai/risk-service/MODEL_CARD.md`](ai/risk-service/MODEL_CARD.md).
 - **Security suite:** every role is tried against every state-changing
   function and must get 403 wherever the rules forbid it, without changing
   the ledger. It also checks that one bank cannot read another's sealed bid,
@@ -161,39 +171,67 @@ Fabric network.
   operator role was refused on chain.
 - **Console:** every party signed in in its own tab and clicked one invoice
   from registration to CLOSED, on the devnet and on the live network.
-- **Benchmark smoke run** (Caliper 0.6, everything on one 4-vCPU machine, 0
-  failures):
+- **Benchmark smoke runs** (Caliper 0.6, everything on one 4-vCPU machine, 0
+  failures), on DRUNIX and on the local Fabric network:
 
-| Workload | Transactions | Throughput | Avg latency |
-|---|---|---|---|
-| Register e-invoice (signature check, 2-org endorsement) | 1,502 | 49.6 TPS | 0.32 s |
-| Month-end spike | 2,628 | 87.4 TPS | 0.34 s |
-| Duplicate check (read-only) | 4,002 | 200.1 TPS | 0.00 s |
+| Workload | Transactions | DRUNIX throughput | DRUNIX avg latency | Local Fabric throughput | Local avg latency |
+|---|---|---|---|---|---|
+| Register e-invoice (signature check, 2-org endorsement) | 1,502 | 48.5 TPS | 2.17 s | 49.6 TPS | 0.32 s |
+| Month-end spike (ramp 50 → 300 TPS) | 2,230 / 2,628 | 56.4 TPS | 5.33 s | 87.4 TPS | 0.34 s |
+| Duplicate check (read-only) | 4,002 | 200.0 TPS | 0.01 s | 200.1 TPS | 0.00 s |
 
-These numbers check correctness and plumbing; the load generator shared the
-machine with every node, so they are not a DRUNIX performance claim.
+On DRUNIX the committing peers set the pace: about 0.9 s per block to
+validate and write state to YugabyteDB, with twelve containers and the load
+generator sharing 4 vCPUs. These numbers check correctness and plumbing, not
+DRUNIX's performance; see [`benchmarks/caliper/results/`](benchmarks/caliper/results/).
 
 ## Where DRUNIX comes in
 
-The code targets the Fabric v2 lifecycle and Gateway API that DRUNIX keeps, so
-it deploys to DRUNIX unchanged with `network/deploy-chaincode.sh`. The design
-uses DRUNIX's own features:
+RASID runs on NPCI's DRUNIX test network (two organisations: Org1MSP plays
+NPCI, Org2MSP plays Citi with the supplier and buyer it enrols). Each part of
+DRUNIX does real work in the flow:
 
-- **Lite and committing peers** absorb month-end registration spikes.
-- **The stateless validation service** keeps signature and policy checks fast
-  under load.
-- **The KeyDB transient store and private data** keep bid rates out of the
-  shared payload.
-- **YugabyteDB** serves SQL analytics over the registry.
-- **Falcon** deploys the network on Kubernetes so a new bank can join quickly.
+- **Lite peers** run the chaincode and endorse every transaction. They keep
+  no ledger, which keeps endorsement load (month-end registration spikes) off
+  the peers that commit.
+- **Committing peers** validate and commit blocks, and the REST gateways read
+  events and commit status from them.
+- **The stateless validation service** checks endorsement policies for the
+  committing peers.
+- **YugabyteDB** holds the world state as SQL rows, so the registry can be
+  queried with plain SQL (`network/drunix/inspect.sh` shows the latest
+  receivables straight from each organisation's database).
+- **The KeyDB transient store** carries each sealed bid as private data;
+  only its hash goes on the shared ledger.
+
+Falcon, DRUNIX's Kubernetes deployer, is not in the public repository, so
+RASID doesn't use it yet.
+
+```bash
+bash network/drunix/setup.sh
+bash network/drunix/up.sh
+bash network/drunix/deploy.sh
+bash scripts/demo-drunix.sh
+bash network/drunix/inspect.sh
+```
+
+`setup.sh` fetches DRUNIX and its images once; `up.sh` starts the network;
+`deploy.sh` installs RASID as a chaincode service, issues identities and
+initialises the ledger. `scripts/console-drunix.sh` opens the web console on
+the same network, and `network/drunix/down.sh` removes it.
+
+Running on DRUNIX turned up six issues in DRUNIX 1.0.0. The most serious is a
+deadlock that stops a committing peer. RASID works around each one, and we
+wrote an upstream fix for the deadlock. All six are in
+[`docs/drunix/findings.md`](docs/drunix/findings.md).
 
 ## Status and limits
 
-- So far everything has run on stock Hyperledger Fabric 2.5, not yet on DRUNIX,
-  so the DRUNIX-only features above are untested.
-- The risk service is a rule-and-graph baseline, not a trained model. Its
-  synthetic results (precision 0.98, recall 1.0) come from data shaped like its
-  own detectors, so they show the pipeline works, not real-world accuracy.
+- RASID has run on DRUNIX's two-organisation test network on one machine,
+  not on a multi-host DRUNIX deployment.
+- The fraud model is trained and tested on simulated trade networks, because
+  no labelled GST invoice-fraud data is public. Its numbers show how it
+  ranks fraud against honest look-alikes, not real-world accuracy.
 - The GST IRP and payment rails are mocks with the real message shapes.
 - Sign-in is a stand-in for each bank's own single sign-on: demo accounts with
   a shared password, held in memory or a JSON file.

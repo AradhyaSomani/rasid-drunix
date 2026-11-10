@@ -23,6 +23,9 @@ tools/issue-identity/issue-identity
 # Caliper run output (benchmarks/caliper/results stays committed)
 node_modules/
 benchmarks/caliper/report.html
+benchmarks/caliper/package-lock.json
+benchmarks/caliper/package.json
+benchmarks/caliper/networks/*.yaml
 caliper.log
 
 # The download bundle
@@ -32,3 +35,4 @@ caliper.log
 tests/ui/node_modules/
 tests/ui/screenshots/
 tests/ui/package-lock.json
+chaincode/rasid/rasid-cc

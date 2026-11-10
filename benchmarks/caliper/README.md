@@ -26,6 +26,12 @@ npx caliper launch manager --caliper-workspace . \
   --caliper-flow-only-test --caliper-fabric-gateway-enabled
 ```
 
+On NPCI's DRUNIX test network (`network/drunix`, after `up.sh` and
+`deploy.sh`), `bash run-drunix.sh` does all of the above: it writes
+`networks/drunix.yaml`, trusts a fresh mock IRP key, installs Caliper and runs
+`benchmark-drunix.yaml`. The 10 Nov run (7,734 transactions, 0 failures) is in
+`results/`.
+
 For the local network in `network/local`, `bash networks/make-local.sh` writes
 `networks/local.yaml`, and `benchmark-smoke.yaml` is a short version of the
 rounds. A first local run (all 8,132 transactions succeeded) is in `results/`.
