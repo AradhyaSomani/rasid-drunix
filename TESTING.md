@@ -15,20 +15,34 @@ Go must be 1.24 or newer and Python 3.9 or newer; the Mac's built-in python3
 is fine. The code blocks here have no inline comments, so each one pastes
 straight into zsh.
 
-## 2. Unit tests
+## 2. Run every check
 
-The first run downloads Go modules, so give it a minute.
+One command runs every check: formatting, `go vet`, syntax, a scan for
+committed private keys, all unit and security tests, the end-to-end demo and
+a browser run of the console. The first run downloads Go modules, so give it
+a few minutes.
 
 ```bash
-(cd chaincode/rasid && go test ./...)
-(cd app/devnet && go test ./...)
-(cd app/gateway && go test ./...)
-(cd ai/risk-service && python3 -m unittest discover -s tests -t .)
-(cd adapters/payments && python3 -m unittest discover -s tests -t .)
-(cd analytics && python3 -m unittest discover -s tests -t .)
+bash scripts/check.sh
 ```
 
-Every line should end in `ok` (Go) or `OK` (Python).
+It ends with a table and `All checks passed`. Run it after every change and
+before every push; GitHub Actions runs the same script on each push.
+`bash scripts/check.sh --quick` skips the demo and the browser (about a
+minute).
+
+The browser check needs Node and Playwright once; without them it shows SKIP:
+
+```bash
+brew install node
+cd tests/ui
+npm install
+npx playwright install chromium
+cd ../..
+```
+
+The browser check also saves a screenshot of every party's screen in
+`tests/ui/screenshots/`.
 
 ## 3. Whole flow in the terminal (no blockchain network needed)
 
@@ -48,22 +62,9 @@ Terminal 1, start the devnet with the AI risk service switched on:
 bash scripts/console-devnet.sh
 ```
 
-Terminal 2, make an IRP key and a signed invoice:
-
-```bash
-cd tools/mock-irp
-go run . keygen -out /tmp/irp
-pbcopy < /tmp/irp/irp-public.pem
-```
-
-That puts the public key on the clipboard, BEGIN and END lines included, for
-step 1 below. Before step 2, put the signed invoice on the clipboard:
-
-```bash
-go run . sign -key /tmp/irp/irp-private.pem -invoice sample-invoice.json | pbcopy
-```
-
-On Linux, use `cat` instead of `pbcopy` and copy the output.
+The console's demo helpers stand in for the GST portal, so you need no
+second terminal. (To sign invoices yourself instead, see "Signing invoices
+by hand" below.)
 
 Open http://localhost:8080. Everyone signs in, and every demo account uses
 the password `rasid`; clicking an account on the sign-in page signs you
@@ -72,10 +73,10 @@ address (don't duplicate a tab, which copies its sign-in). Each tab stays
 signed in as its own party, and an invoice opens on the right when you click
 it.
 
-1. Tab 1, **npci** (NPCI operator): paste the public key under Network setup
-   and click "Trust IRP key".
-2. Tab 2, **msme** (MSME supplier): paste the signed invoice, check the due
-   date, click "Register invoice".
+1. Tab 1, **npci** (NPCI operator): under Network setup, click "Use the demo
+   IRP's key". The green note shows the block that recorded it.
+2. Tab 2, **msme** (MSME supplier): click "Create a sample e-invoice", check
+   the due date, click "Register invoice".
 3. Tab 3, **risk** (AI risk desk): nothing to do. The AI scored the invoice
    the moment it was registered, and it is under "Scored by the AI" with its
    reasons. The risk desk can override a score, but doesn't have to.
@@ -97,18 +98,15 @@ controls. The server enforces this as well: a request without a sign-in gets
 401, and the chaincode refuses any call the signed-in identity's role does not
 allow.
 
-To watch the AI catch a re-issued invoice, sign a copy of the sample with
-another document number in terminal 2 (still in `tools/mock-irp`), then
-register it in the msme tab:
+To watch the AI catch a re-issued invoice, click "Re-issue the last one
+under a new number" in the msme tab and register it. The AI scores it about
+50, as a near-duplicate of the first. In the risk tab, override it to 80 and
+the ledger will refuse to list it, because the limit for e-invoices is 70.
 
-```bash
-sed 's/0042/0043/' sample-invoice.json > /tmp/irp/invoice-2.json
-go run . sign -key /tmp/irp/irp-private.pem -invoice /tmp/irp/invoice-2.json | pbcopy
-```
-
-The AI scores it about 50, as a near-duplicate of the first. In the risk tab,
-override it to 80 and the ledger will refuse to list it, because the limit for
-e-invoices is 70.
+Each invoice's detail ends with its ledger trail: every version the ledger
+committed, with the transaction that wrote it. The bar at the top shows the
+ledger, its block height and whether the live feed is connected; the four
+numbers under it are that party's headline figures.
 
 The bids' rates and salts stay in your browser, standing in for each bank
 sending its bid to the MSME privately. Award picks the cheapest bids that fit
@@ -118,6 +116,23 @@ Sign out is at the top right. Ctrl-C in terminal 1 stops the devnet and the
 AI service; the ledger and the sign-ins are in memory, so a restart is clean
 and signs everyone out. `cd app/devnet && go run .` also works, without the
 AI: the risk desk then scores each invoice by hand.
+
+### Signing invoices by hand
+
+The same flow works with invoices signed in a terminal, as on a live network:
+
+```bash
+cd tools/mock-irp
+go run . keygen -out /tmp/irp
+pbcopy < /tmp/irp/irp-public.pem
+```
+
+Paste that under Network setup and click "Trust IRP key", then sign an
+invoice and paste it into the msme tab:
+
+```bash
+go run . sign -key /tmp/irp/irp-private.pem -invoice sample-invoice.json | pbcopy
+```
 
 ## 5. Optional: a real 3-org Fabric network (no Docker)
 

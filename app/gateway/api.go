@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/hyperledger/fabric-gateway/pkg/client"
@@ -27,7 +28,7 @@ type App struct {
 func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "msp": a.cfg.MSPID})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "msp": a.cfg.MSPID, "ledger": a.cfg.LedgerName})
 	})
 	guard := func(h http.HandlerFunc) http.HandlerFunc { return h }
 	if a.auth != nil {
@@ -41,7 +42,7 @@ func (a *App) routes() http.Handler {
 	if a.cfg.WebDir != "" {
 		mux.Handle("GET /", http.FileServer(http.Dir(a.cfg.WebDir)))
 	}
-	return withCORS(a.cfg.CORSOrigin, mux)
+	return harden(withCORS(a.cfg.CORSOrigin, mux), a.cfg.ConnectSrc, false)
 }
 
 // withCORS lets the web console, served from one gateway, call the others.
@@ -72,6 +73,7 @@ type txRequest struct {
 
 type txResult struct {
 	TxID   string          `json:"txId"`
+	Block  uint64          `json:"block,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 }
 
@@ -103,13 +105,13 @@ func (a *App) submit(name string, args []string, transient map[string][]byte, en
 	if !status.Successful {
 		return nil, fmt.Errorf("transaction %s failed to commit: %s", status.TransactionID, status.Code)
 	}
-	return &txResult{TxID: tx.TransactionID(), Result: asJSON(tx.Result())}, nil
+	return &txResult{TxID: tx.TransactionID(), Block: status.BlockNumber, Result: asJSON(tx.Result())}, nil
 }
 
 func (a *App) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	var req txRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		bodyError(w, err)
 		return
 	}
 	args, err := stringArgs(req.Args)
@@ -123,7 +125,7 @@ func (a *App) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := a.submit(r.PathValue("contract")+":"+r.PathValue("function"), args, transient, req.EndorsingOrgs...)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		ledgerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -132,7 +134,7 @@ func (a *App) handleSubmit(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleQuery(w http.ResponseWriter, r *http.Request) {
 	out, err := a.contract.EvaluateTransaction(r.PathValue("contract")+":"+r.PathValue("function"), r.URL.Query()["arg"]...)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		ledgerError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -148,7 +150,7 @@ func (a *App) handleBid(w http.ResponseWriter, r *http.Request) {
 		RateBps int64 `json:"rateBps"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		bodyError(w, err)
 		return
 	}
 	salt := make([]byte, 16)
@@ -167,7 +169,7 @@ func (a *App) handleBid(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := a.submit("Marketplace:SubmitBid", []string{r.PathValue("receivableId")}, map[string][]byte{"bid": raw}, orgs...)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		ledgerError(w, err)
 		return
 	}
 	bid["bidId"] = res.TxID
@@ -210,6 +212,23 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ledgerError reports a failed submit or evaluate: a chaincode refusal gets
+// its own status (403, 404, 409 or 400), a fault reaching the peers a 502.
+func ledgerError(w http.ResponseWriter, err error) {
+	var endorseErr *client.EndorseError
+	var commitErr *client.CommitStatusError
+	switch {
+	case errors.As(err, &endorseErr):
+		writeError(w, chaincodeStatus(fmt.Sprint(err, endorseErr.GRPCStatus().Details())), err)
+	case errors.As(err, &commitErr):
+		writeError(w, http.StatusBadGateway, err)
+	case strings.Contains(err.Error(), "chaincode response"), strings.Contains(err.Error(), "failed to commit"):
+		writeError(w, chaincodeStatus(err.Error()), err)
+	default:
+		writeError(w, http.StatusBadGateway, err)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {

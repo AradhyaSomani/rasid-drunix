@@ -4,17 +4,12 @@
     POST /repayments  {"repayments": [Repayment...]}
     POST /score       {"invoice": Invoice}             score one invoice
     GET  /health
-    GET  /model                                         model version, file hash and held-out test results
 
 /score returns the report plus the exact arguments for
 InvoiceRegistry:RecordRiskScore(id, score, modelVersion, reasonCodes, reportHash).
 Dates are YYYY-MM-DD; ids are the hashed GSTINs used on the ledger.
 
 Run:  RASID_RISK_KEY=change-me python -m rasid_risk.server --port 8090
-
-The trained model in rasid_risk/models/ is loaded at start-up. Set
-RASID_RISK_MODEL to another model file, or to "rules" for the hand-set
-rasid-graph-0.1 baseline.
 """
 
 from __future__ import annotations
@@ -27,17 +22,9 @@ from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Lock
 
-from .engine import RULE_MODEL_VERSION, Invoice, Repayment, RiskEngine
-from .model import DEFAULT_MODEL_PATH, AdditiveModel
+from .engine import Invoice, Repayment, RiskEngine
 
-
-def load_model():
-    choice = os.environ.get("RASID_RISK_MODEL", str(DEFAULT_MODEL_PATH))
-    return None if choice == "rules" else AdditiveModel.load(choice)
-
-
-MODEL = load_model()
-ENGINE = RiskEngine(MODEL)
+ENGINE = RiskEngine()
 LOCK = Lock()
 SIGNING_KEY = os.environ.get("RASID_RISK_KEY", "dev-only-key").encode()
 
@@ -77,14 +64,6 @@ def score_payload(inv: Invoice) -> dict:
     }
 
 
-def model_info() -> dict:
-    m = ENGINE.model
-    if m is None:
-        return {"version": RULE_MODEL_VERSION, "kind": "hand-set rules"}
-    return {"version": m.version, "kind": "boosted additive model (explainable)", "sha256": m.meta.get("sha256"),
-            "features": m.features, "test": m.meta.get("test", {}), "demo": m.meta.get("demo", {})}
-
-
 class Handler(BaseHTTPRequestHandler):
     def _send(self, status: int, body: dict) -> None:
         raw = json.dumps(body, default=str).encode()
@@ -96,9 +75,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
-            self._send(200, {"status": "ok", "invoices": len(ENGINE.invoices), "model": model_info()["version"]})
-        elif self.path == "/model":
-            self._send(200, model_info())
+            self._send(200, {"status": "ok", "invoices": len(ENGINE.invoices)})
         else:
             self._send(404, {"error": "not found"})
 
@@ -130,7 +107,7 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8090)
     args = ap.parse_args()
-    print(f"RASID risk oracle on http://{args.host}:{args.port}, model {model_info()['version']}")
+    print(f"RASID risk oracle on http://{args.host}:{args.port}")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

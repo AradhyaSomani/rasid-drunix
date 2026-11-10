@@ -1,0 +1,45 @@
+# Runs scripts/check.sh on every push and pull request: static checks, unit,
+# security and role tests, the end-to-end demo and the browser smoke test.
+name: checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: "**/go.sum"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the browser test's tools
+        working-directory: tests/ui
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Install shellcheck and jq
+        run: sudo apt-get install -y shellcheck jq
+      - name: Run every check
+        env:
+          CI: "true"
+        run: bash scripts/check.sh
+      - name: Keep the console screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-screenshots
+          path: tests/ui/screenshots/
+          if-no-files-found: ignore

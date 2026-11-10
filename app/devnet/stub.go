@@ -16,6 +16,12 @@ import (
 type world struct {
 	state   map[string][]byte
 	private map[string]map[string][]byte
+	history map[string][]*queryresult.KeyModification // per key, oldest first
+	height  int                                       // committed transactions, shown as the block height
+}
+
+func newWorld() *world {
+	return &world{state: map[string][]byte{}, private: map[string]map[string][]byte{}, history: map[string][]*queryresult.KeyModification{}}
 }
 
 // txStub is one transaction's view of the world. Writes are buffered and only
@@ -125,16 +131,28 @@ func (s *txStub) GetStateByPartialCompositeKeyWithPagination(t string, a []strin
 	return page, &peer.QueryResponseMetadata{FetchedRecordsCount: int32(len(page.kvs))}, nil
 }
 
-func (s *txStub) GetHistoryForKey(string) (shim.HistoryQueryIteratorInterface, error) {
-	return nil, fmt.Errorf("history is not kept by the devnet ledger")
+// GetHistoryForKey returns the committed versions of a key, newest first as
+// a peer does. Like a peer, it never sees this transaction's own writes.
+func (s *txStub) GetHistoryForKey(k string) (shim.HistoryQueryIteratorInterface, error) {
+	h := s.w.history[k]
+	out := make([]*queryresult.KeyModification, len(h))
+	for i, m := range h {
+		out[len(h)-1-i] = m
+	}
+	return &histIter{mods: out}, nil
 }
 
 func (s *txStub) commit() {
+	s.w.height++
+	ts := timestamppb.New(s.now)
 	for k, v := range s.writes {
 		if v == nil {
 			delete(s.w.state, k)
 		} else {
 			s.w.state[k] = v
+		}
+		if s.w.history != nil {
+			s.w.history[k] = append(s.w.history[k], &queryresult.KeyModification{TxId: s.txID, Value: v, Timestamp: ts, IsDelete: v == nil})
 		}
 	}
 	for c, kv := range s.pvtWrites {
@@ -158,4 +176,17 @@ func (it *iter) Next() (*queryresult.KV, error) {
 	kv := it.kvs[it.i]
 	it.i++
 	return kv, nil
+}
+
+type histIter struct {
+	mods []*queryresult.KeyModification
+	i    int
+}
+
+func (it *histIter) HasNext() bool { return it.i < len(it.mods) }
+func (it *histIter) Close() error  { return nil }
+func (it *histIter) Next() (*queryresult.KeyModification, error) {
+	m := it.mods[it.i]
+	it.i++
+	return m, nil
 }

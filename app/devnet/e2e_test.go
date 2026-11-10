@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -66,12 +67,22 @@ func (c client) tx(fn string, as Identity, at string, args ...any) map[string]an
 }
 
 func signedQR(t *testing.T) (string, string) {
+	return signQR(t, "10/11/2026", "MSME/26-27/0042")
+}
+
+// signedQRDated signs an e-invoice dated on day.
+func signedQRDated(t *testing.T, day time.Time, docNo string) (string, string) {
+	return signQR(t, day.Format("02/01/2006"), docNo)
+}
+
+func signQR(t *testing.T, docDt, docNo string) (string, string) {
+	t.Helper()
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	der, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	pub := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 	data, _ := json.Marshal(map[string]any{
-		"SellerGstin": sellerGSTIN, "BuyerGstin": buyerGSTIN, "DocNo": "MSME/26-27/0042", "DocTyp": "INV",
-		"DocDt": "10/11/2026", "TotInvVal": 1000000.00, "Irn": "irn-0042",
+		"SellerGstin": sellerGSTIN, "BuyerGstin": buyerGSTIN, "DocNo": docNo, "DocTyp": "INV",
+		"DocDt": docDt, "TotInvVal": 1000000.00, "Irn": "irn-" + docNo,
 	})
 	payload, _ := json.Marshal(map[string]string{"data": string(data)})
 	enc := base64.RawURLEncoding

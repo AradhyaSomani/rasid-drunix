@@ -17,10 +17,11 @@ trap cleanup EXIT
 (cd "$ROOT/ai/risk-service" && exec python3 -m rasid_risk.server --port "${RISK##*:}") >"$WORK/risk.log" 2>&1 & PIDS+=($!)
 for _ in $(seq 1 50); do curl -sf "$RISK/health" >/dev/null && break; sleep 0.2; done
 curl -sf "$RISK/health" >/dev/null || { echo "the AI risk service did not start; see $WORK/risk.log" >&2; exit 1; }
-(cd "$ROOT/app/devnet" && exec "$WORK/devnet" -listen ":$PORT" -risk-url "$RISK") & PIDS+=($!)
+(cd "$ROOT/app/devnet" && exec "$WORK/devnet" -listen ":$PORT" -risk-url "$RISK" -demo-irp) & PIDS+=($!)
 sleep 1
 echo
 echo "Console: http://localhost:$PORT"
 echo "Sign in as npci, risk, msme, buyer, citi or nbfc, password rasid (one browser tab each)."
-echo "The AI risk service scores each new invoice. Ctrl-C stops everything."
+echo "The AI risk service scores each new invoice. The MSME can create sample e-invoices from the console."
+echo "Ctrl-C stops everything."
 wait

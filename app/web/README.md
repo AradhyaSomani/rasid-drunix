@@ -1,6 +1,6 @@
 # RASID web console
 
-One page, no build step. Everyone signs in, the server decides which ledger
+One page (`index.html` with its script in `app.js`), no build step. Everyone signs in, the server decides which ledger
 identity that login acts as, and the page shows that party its own screen:
 
 | Party | Demo login | Their screen |
@@ -51,3 +51,19 @@ Notes:
   others.
 - The lists load the first 200 receivables and keep any seen through events.
 - The gateways need `CORS_ORIGIN` set when the page is served from another origin.
+
+## What each screen shows
+
+- A bar under the logo naming the ledger, whether the live feed is
+  connected, and the block height.
+- Four headline numbers for the signed-in party (for a bank: deployed, back
+  at maturity, discount earned, open for bids).
+- A search box and stage filter over the lists.
+- After each action, a note with the block and transaction that recorded it.
+- Under each invoice, its ledger trail: every committed version and the
+  transaction that wrote it.
+- On the devnet started with `-demo-irp`, "Use the demo IRP's key" for NPCI
+  and "Create a sample e-invoice" and "Re-issue the last one" for the MSME.
+
+`tests/ui/console.test.mjs` clicks all of it in a headless browser.
+

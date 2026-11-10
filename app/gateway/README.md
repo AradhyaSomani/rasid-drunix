@@ -61,3 +61,17 @@ curl "localhost:8080/query/InvoiceRegistry/GetReceivable?arg=<id>"
 Ran against a local 3-org Fabric 2.5 network (`network/local/`): five
 gateways, one per role, drove the full flow to CLOSED and served the console.
 It has not yet run against DRUNIX itself.
+
+## Hardening and console settings
+
+Every response carries security headers and a content security policy;
+request bodies are capped at 1 MB; five wrong passwords lock that username
+for 30 seconds, doubling after each further miss. Chaincode refusals return
+403, 404, 409 or 400 with the reason; a fault reaching the peers returns 502.
+Each transaction result includes the block it committed in.
+
+| Variable | Default | Does |
+|---|---|---|
+| `LEDGER_NAME` | `Fabric network` | How the console's network bar names the ledger (set `DRUNIX network` on DRUNIX) |
+| `CONNECT_SRC` | `'self' http://127.0.0.1:* http://localhost:*` | Gateways the console may call, for its content security policy |
+

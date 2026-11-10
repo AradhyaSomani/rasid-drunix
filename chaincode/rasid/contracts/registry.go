@@ -3,6 +3,7 @@ package contracts
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -355,8 +356,18 @@ func (c *InvoiceRegistry) CheckDuplicate(ctx contractapi.TransactionContextInter
 	return b != nil, err
 }
 
-// GetReceivableHistory returns every committed version of a receivable.
-func (c *InvoiceRegistry) GetReceivableHistory(ctx contractapi.TransactionContextInterface, id string) ([]string, error) {
+// ReceivableVersion is one committed version of a receivable: the ledger
+// trail the console shows under each invoice.
+type ReceivableVersion struct {
+	TxID       string      `json:"txId"`
+	Timestamp  string      `json:"timestamp"`
+	Deleted    bool        `json:"deleted"`
+	Receivable *Receivable `json:"receivable,omitempty" metadata:"receivable,optional"`
+}
+
+// GetReceivableHistory returns every committed version of a receivable,
+// oldest first, with the transaction that wrote it.
+func (c *InvoiceRegistry) GetReceivableHistory(ctx contractapi.TransactionContextInterface, id string) ([]*ReceivableVersion, error) {
 	key, err := compositeKey(ctx, keyReceivable, id)
 	if err != nil {
 		return nil, err
@@ -366,14 +377,29 @@ func (c *InvoiceRegistry) GetReceivableHistory(ctx contractapi.TransactionContex
 		return nil, err
 	}
 	defer it.Close()
-	out := []string{}
+	out := []*ReceivableVersion{}
+	at := map[*ReceivableVersion]time.Time{}
 	for it.HasNext() {
 		m, err := it.Next()
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, string(m.Value))
+		v := &ReceivableVersion{TxID: m.TxId, Deleted: m.IsDelete}
+		if ts := m.GetTimestamp(); ts != nil {
+			at[v] = ts.AsTime()
+			v.Timestamp = at[v].UTC().Format(time.RFC3339)
+		}
+		if !m.IsDelete && len(m.Value) > 0 {
+			var r Receivable
+			if err := json.Unmarshal(m.Value, &r); err != nil {
+				return nil, fmt.Errorf("history of %s: %w", id, err)
+			}
+			v.Receivable = &r
+		}
+		out = append(out, v)
 	}
+	// Peers return history newest first; the trail reads oldest first.
+	sort.SliceStable(out, func(i, j int) bool { return at[out[i]].Before(at[out[j]]) })
 	return out, nil
 }
 

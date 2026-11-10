@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared by demo-network.sh and console-network.sh: starts one gateway per
 # identity on the local Fabric network, the risk service (with the risk bridge
 # on NPCI's risk-oracle gateway) and the settlement adapters. Source it.

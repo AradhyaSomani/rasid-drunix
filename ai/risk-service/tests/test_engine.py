@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 from rasid_risk import Invoice, Repayment, RiskEngine
 from rasid_risk.engine import docs_match
 from rasid_risk.server import Handler
-from rasid_risk.synth import FRAUD_TYPES, evaluate, generate, generate_network
+from rasid_risk.synth import evaluate, generate
 
 D = date(2026, 11, 10)
 
@@ -76,19 +76,11 @@ class EngineTest(unittest.TestCase):
         e.add_invoice(i)
         self.assertEqual(e.score(i).report_hash(), e.score(i).report_hash())
 
-    def test_synthetic_network_has_every_fraud_type(self):
-        net = generate_network(150, 2000, 3)
-        self.assertEqual(set(net.labels.values()), set(FRAUD_TYPES))
-        rate = len(net.labels) / len(net.invoices)
-        self.assertTrue(0.02 < rate < 0.10, rate)
-        self.assertEqual(len({i.receivable_id for i in net.invoices}), len(net.invoices))
-        again = generate_network(150, 2000, 3)
-        self.assertEqual([i.receivable_id for i in again.invoices], [i.receivable_id for i in net.invoices])
-
-    def test_rule_baseline_still_runs(self):
-        invs, fraud = generate(100, 1000, 3)
+    def test_synthetic_evaluation(self):
+        invs, fraud = generate(150, 2000, 3)
         m = evaluate(invs, fraud, rescore=True)
-        self.assertGreater(m["recall"], 0.2)
+        self.assertGreater(m["recall"], 0.9)
+        self.assertGreater(m["precision"], 0.8)
 
 
 class ServerTest(unittest.TestCase):

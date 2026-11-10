@@ -131,14 +131,31 @@ pays both holders, ending CLOSED.
 To click through it, run `bash scripts/console-devnet.sh`, which starts the
 devnet with the AI risk service scoring every new invoice. Open
 http://localhost:8080 and sign in, for example as `msme` with the demo
-password `rasid`, using one browser tab per party.
+password `rasid`, using one browser tab per party. On the devnet the MSME can
+create a signed sample e-invoice from the console, so the demo needs no
+terminal.
+
+To check that everything still works after a change:
+
+```bash
+bash scripts/check.sh
+```
 [TESTING.md](TESTING.md) has every step, including the unit tests and the live
 Fabric network.
 
 ## Results so far
 
-- **Tests:** 14 chaincode tests, plus the devnet, gateway, risk service,
-  adapter and indexer suites, all passing.
+- **Checks:** `bash scripts/check.sh` runs 16 checks and must pass after
+  every change; GitHub Actions runs it on every push. They cover formatting,
+  `go vet`, shell and JavaScript syntax, a scan for committed private keys,
+  57 unit tests (14 chaincode, 14 devnet, 9 gateway, 10 risk service, 6
+  adapters, 4 indexer) under Go's race detector, the end-to-end demo, and a
+  headless-browser run of the console from registration to CLOSED.
+- **Security suite:** every role is tried against every state-changing
+  function and must get 403 wherever the rules forbid it, without changing
+  the ledger. It also checks that one bank cannot read another's sealed bid,
+  that every ledger endpoint needs a sign-in, the security headers, the 1 MB
+  body cap and the sign-in lockout.
 - **Live network:** on the local 3-org Fabric 2.5 network, five gateways (one
   per role) ran the full flow to CLOSED. A Citi certificate claiming the NPCI
   operator role was refused on chain.

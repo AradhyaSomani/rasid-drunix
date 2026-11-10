@@ -16,9 +16,12 @@ package main
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/hyperledger/fabric-gateway/pkg/client"
@@ -44,6 +47,8 @@ type config struct {
 	WebDir        string // serve the web console from here when set
 	LoginUsers    string // "name:password,..." turns on sign-in for the console
 	LoginLabel    string // how the console names this gateway's identity, e.g. "Citi"
+	ConnectSrc    string // gateways the console may call, for its content security policy
+	LedgerName    string // how the console names the network, e.g. "DRUNIX network"
 }
 
 func env(k, def string) string {
@@ -70,6 +75,8 @@ func loadConfig() config {
 		WebDir:        os.Getenv("WEB_DIR"),
 		LoginUsers:    os.Getenv("LOGIN_USERS"),
 		LoginLabel:    os.Getenv("LOGIN_LABEL"),
+		ConnectSrc:    env("CONNECT_SRC", "'self' http://127.0.0.1:* http://localhost:*"),
+		LedgerName:    env("LEDGER_NAME", "Fabric network"),
 	}
 }
 
@@ -126,7 +133,18 @@ func main() {
 
 	log.Printf("RASID gateway for %s on %s (channel %s, chaincode %s)", cfg.MSPID, cfg.Listen, cfg.Channel, cfg.Chaincode)
 	srv := &http.Server{Addr: cfg.Listen, Handler: app.routes(), ReadHeaderTimeout: 10 * time.Second}
-	log.Fatal(srv.ListenAndServe())
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-stop
+		cancel()
+		sctx, done := context.WithTimeout(context.Background(), 3*time.Second)
+		defer done()
+		_ = srv.Shutdown(sctx)
+	}()
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
 }
 
 func grpcConnection(cfg config) (*grpc.ClientConn, error) {

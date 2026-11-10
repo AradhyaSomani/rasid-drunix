@@ -16,6 +16,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -24,8 +25,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/AradhyaSomani/rasid-drunix/chaincode/rasid/contracts"
@@ -39,7 +43,10 @@ type server struct {
 	txSeq        int
 	events       *hub
 	auth         *auth
-	trustHeaders bool // accept X-Rasid-Identity without a login (scripts, tests)
+	trustHeaders bool     // accept X-Rasid-Identity without a login (scripts, tests)
+	irp          *demoIRP // built-in mock IRP, with -demo-irp
+	riskURL      string
+	quiet        bool // no request log
 }
 
 func newServer() (*server, error) {
@@ -57,7 +64,7 @@ func newServer() (*server, error) {
 	}
 	return &server{
 		cc:     cc,
-		world:  &world{state: map[string][]byte{}, private: map[string]map[string][]byte{}},
+		world:  newWorld(),
 		events: newHub(),
 		auth:   newAuth(demoAccounts(DemoPassword), true),
 	}, nil
@@ -65,6 +72,7 @@ func newServer() (*server, error) {
 
 type txResult struct {
 	TxID   string          `json:"txId"`
+	Block  uint64          `json:"block,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 }
 
@@ -89,18 +97,35 @@ func (s *server) invoke(id Identity, at time.Time, fn string, args []string, tra
 	}
 	resp := s.cc.Invoke(stub)
 	if resp.Status != 200 {
-		return nil, fmt.Errorf("%s", resp.Message)
+		return nil, chaincodeError(resp.Message)
 	}
+	var block uint64
 	if submit {
 		stub.commit()
+		block = uint64(s.world.height)
 		if stub.eventName != "" {
 			b, _ := json.Marshal(map[string]any{
-				"block": s.txSeq, "txId": stub.txID, "name": stub.eventName, "payload": json.RawMessage(stub.eventBody),
+				"block": block, "txId": stub.txID, "name": stub.eventName, "payload": json.RawMessage(stub.eventBody),
 			})
 			s.events.publish(b)
 		}
 	}
-	return &txResult{TxID: stub.txID, Result: asJSON(resp.Payload)}, nil
+	return &txResult{TxID: stub.txID, Block: block, Result: asJSON(resp.Payload)}, nil
+}
+
+// chaincodeError is a refusal by the chaincode, as opposed to a server fault.
+type chaincodeError string
+
+func (e chaincodeError) Error() string { return string(e) }
+
+// txError writes a chaincode refusal with its status (403, 404, 409 or 400).
+func txError(w http.ResponseWriter, err error) {
+	var cc chaincodeError
+	if errors.As(err, &cc) {
+		writeError(w, chaincodeStatus(string(cc)), err)
+		return
+	}
+	writeError(w, http.StatusBadRequest, err)
 }
 
 // identify returns who the request acts as: the signed-in account, or, with
@@ -132,15 +157,38 @@ func (s *server) routes(webDir string) http.Handler {
 	if webDir != "" {
 		mux.Handle("GET /", http.FileServer(http.Dir(webDir)))
 	}
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "mode": "devnet"})
-	})
+	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /tx/{contract}/{function}", s.handleTx)
 	mux.HandleFunc("GET /query/{contract}/{function}", s.handleQuery)
 	mux.HandleFunc("POST /bids/{receivableId}", s.handleBid)
 	mux.HandleFunc("GET /events", s.handleEvents)
 	s.auth.routes(mux)
-	return mux
+	if s.irp != nil {
+		s.demoRoutes(mux)
+	}
+	return harden(mux, s.quiet)
+}
+
+// handleHealth tells the console which ledger it is on and how far it has got.
+func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	height := s.world.height
+	s.mu.Unlock()
+	risk := "off"
+	if s.riskURL != "" {
+		risk = "unreachable"
+		c := http.Client{Timeout: 500 * time.Millisecond}
+		if resp, err := c.Get(s.riskURL + "/health"); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				risk = "on"
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "mode": "devnet", "ledger": "DRUNIX devnet: real RASID chaincode on an in-memory ledger",
+		"height": height, "demoIrp": s.irp != nil, "aiRisk": risk,
+	})
 }
 
 var errUnauthorized = errors.New("sign in first")
@@ -164,7 +212,7 @@ func (s *server) handleTx(w http.ResponseWriter, r *http.Request) {
 		Transient map[string]json.RawMessage `json:"transient"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		bodyError(w, err)
 		return
 	}
 	args, err := stringArgs(req.Args)
@@ -178,7 +226,7 @@ func (s *server) handleTx(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.invoke(id, at, r.PathValue("contract")+":"+r.PathValue("function"), args, transient, true)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		txError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -192,7 +240,7 @@ func (s *server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.invoke(id, at, r.PathValue("contract")+":"+r.PathValue("function"), r.URL.Query()["arg"], nil, false)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		txError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -210,7 +258,7 @@ func (s *server) handleBid(w http.ResponseWriter, r *http.Request) {
 		RateBps int64 `json:"rateBps"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		bodyError(w, err)
 		return
 	}
 	salt := make([]byte, 16)
@@ -219,7 +267,7 @@ func (s *server) handleBid(w http.ResponseWriter, r *http.Request) {
 	raw, _ := json.Marshal(bid)
 	res, err := s.invoke(id, at, "Marketplace:SubmitBid", []string{r.PathValue("receivableId")}, map[string][]byte{"bid": raw}, true)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		txError(w, err)
 		return
 	}
 	bid["bidId"] = res.TxID
@@ -331,12 +379,21 @@ func main() {
 	users := flag.String("users", "", "JSON file of accounts [{username,password,label,identity}] (default: demo accounts)")
 	trust := flag.Bool("trust-headers", false, "also accept X-Rasid-Identity without a login (scripts and tests only)")
 	riskURL := flag.String("risk-url", "", "AI risk service that scores each new invoice, e.g. http://127.0.0.1:8090")
+	demo := flag.Bool("demo-irp", false, "built-in mock GST IRP: the console can create signed sample e-invoices (demos only)")
+	quiet := flag.Bool("quiet", false, "do not log each request")
 	flag.Parse()
 	s, err := newServer()
 	if err != nil {
 		log.Fatalf("load chaincode: %v", err)
 	}
 	s.trustHeaders = *trust
+	s.quiet = *quiet
+	if *demo {
+		if s.irp, err = newDemoIRP(); err != nil {
+			log.Fatalf("demo IRP: %v", err)
+		}
+		log.Printf("demo IRP on: the console can create signed sample e-invoices")
+	}
 	if *users != "" {
 		accts, err := loadAccounts(*users)
 		if err != nil {
@@ -353,9 +410,20 @@ func main() {
 		} else {
 			log.Printf("AI risk service not reachable at %s yet; new invoices will be scored once it is up", *riskURL)
 		}
+		s.riskURL = *riskURL
 		go s.runRiskBridge(*riskURL)
 	}
 	log.Printf("RASID devnet (in-memory ledger, real chaincode) on %s", *listen)
 	srv := &http.Server{Addr: *listen, Handler: s.routes(*web), ReadHeaderTimeout: 10 * time.Second}
-	log.Fatal(srv.ListenAndServe())
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-stop
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
 }

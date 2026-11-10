@@ -1,23 +1,34 @@
+# macOS and editors
 .DS_Store
 .vscode/
 .idea/
 
+# Python
 __pycache__/
 *.pyc
 .venv/
 
+# Go binaries from `go build` inside a component folder
 app/devnet/devnet
 app/gateway/gateway
 tools/mock-irp/mock-irp
 tools/issue-identity/issue-identity
 
+# Keys, certificates and local data: never commit these
 *.pem
 *.key
 *.db
 .env
 
+# Caliper run output (benchmarks/caliper/results stays committed)
 node_modules/
 benchmarks/caliper/report.html
 caliper.log
 
+# The download bundle
 *.zip
+
+# Browser test output
+tests/ui/node_modules/
+tests/ui/screenshots/
+tests/ui/package-lock.json

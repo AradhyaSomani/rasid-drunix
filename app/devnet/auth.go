@@ -62,10 +62,27 @@ type auth struct {
 	demo     bool // built-in accounts with the published demo password
 	mu       sync.Mutex
 	sessions map[string]session
+	fails    map[string]*failures
+	lockout  time.Duration // first lockout after maxFails wrong passwords; doubles after each further miss
+}
+
+// maxFails wrong passwords in a row lock a username for a while.
+const maxFails = 5
+
+type failures struct {
+	n     int
+	until time.Time
+}
+
+// errThrottled means too many wrong passwords; the client should wait.
+type errThrottled struct{ wait time.Duration }
+
+func (e errThrottled) Error() string {
+	return fmt.Sprintf("too many wrong passwords; try again in %d seconds", int(e.wait.Seconds()+0.999))
 }
 
 func newAuth(accts []Account, demo bool) *auth {
-	a := &auth{accounts: map[string]Account{}, demo: demo, sessions: map[string]session{}}
+	a := &auth{accounts: map[string]Account{}, demo: demo, sessions: map[string]session{}, fails: map[string]*failures{}, lockout: 30 * time.Second}
 	for _, acct := range accts {
 		a.accounts[strings.ToLower(acct.Username)] = acct
 	}
@@ -75,10 +92,21 @@ func newAuth(accts []Account, demo bool) *auth {
 var errBadLogin = errors.New("wrong username or password")
 
 func (a *auth) login(username, password string) (string, Account, error) {
-	acct, ok := a.accounts[strings.ToLower(strings.TrimSpace(username))]
+	name := strings.ToLower(strings.TrimSpace(username))
+	a.mu.Lock()
+	if f := a.fails[name]; f != nil && time.Now().Before(f.until) {
+		a.mu.Unlock()
+		return "", Account{}, errThrottled{time.Until(f.until)}
+	}
+	a.mu.Unlock()
+	acct, ok := a.accounts[name]
 	if !ok || subtle.ConstantTimeCompare([]byte(acct.Password), []byte(password)) != 1 {
+		a.failed(name)
 		return "", Account{}, errBadLogin
 	}
+	a.mu.Lock()
+	delete(a.fails, name)
+	a.mu.Unlock()
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", Account{}, err
@@ -88,6 +116,24 @@ func (a *auth) login(username, password string) (string, Account, error) {
 	a.sessions[token] = session{acct: acct, expires: time.Now().Add(sessionTTL)}
 	a.mu.Unlock()
 	return token, acct, nil
+}
+
+func (a *auth) failed(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.fails) > 10000 { // someone is spraying usernames; start over rather than grow without limit
+		a.fails = map[string]*failures{}
+	}
+	f := a.fails[name]
+	if f == nil {
+		f = &failures{}
+		a.fails[name] = f
+	}
+	f.n++
+	if f.n >= maxFails {
+		wait := a.lockout << min(f.n-maxFails, 5)
+		f.until = time.Now().Add(wait)
+	}
 }
 
 func (a *auth) lookup(token string) (Account, bool) {
@@ -131,10 +177,16 @@ func (a *auth) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/login", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Username, Password string }
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			bodyError(w, err)
 			return
 		}
 		token, acct, err := a.login(req.Username, req.Password)
+		var slow errThrottled
+		if errors.As(err, &slow) {
+			w.Header().Set("Retry-After", fmt.Sprint(int(slow.wait.Seconds()+0.999)))
+			writeError(w, http.StatusTooManyRequests, err)
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, err)
 			return

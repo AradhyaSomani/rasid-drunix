@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Helpers for the peer CLI against the local RASID network. Source after up.sh.
 WORK=${WORK:-/tmp/rasid-net}
 export FABRIC_CFG_PATH=$WORK/config CORE_PEER_TLS_ENABLED=true

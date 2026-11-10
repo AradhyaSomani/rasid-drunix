@@ -8,7 +8,7 @@ set -euo pipefail
 CONSOLE_LOGIN=1
 source "$(dirname "$0")/lib-network.sh"
 mkdir -p "$TMP/web"
-cp "$ROOT/app/web/index.html" "$TMP/web/"
+cp "$ROOT/app/web/index.html" "$ROOT/app/web/app.js" "$TMP/web/"
 DEMO=""
 if [ -z "${RASID_PASSWORD:-}" ]; then DEMO=",\"demoPassword\":\"$PASS\""; fi
 cat >"$TMP/web/gateways.json" <<JSON

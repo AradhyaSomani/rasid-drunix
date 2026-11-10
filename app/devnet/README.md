@@ -61,12 +61,41 @@ ledger as NPCIMSP's risk oracle, and completed repayments are fed back.
 `scripts/console-devnet.sh` starts both. Without it, the risk desk scores by
 hand.
 
+## Demo IRP
+
+With `-demo-irp` the devnet carries its own mock GST IRP, so a live demo
+needs no terminal. `scripts/console-devnet.sh` turns it on.
+
+| Method | Path | Does |
+|---|---|---|
+| GET | `/demo/irp-key` | The demo IRP's public key, for NPCI's "Use the demo IRP's key" |
+| POST | `/demo/invoice` | `{"rupees","buyerGstin","docNo"}`, all optional: an e-invoice signed for the signed-in supplier's own GSTIN |
+
+Only a supplier can raise one, and only for its own GSTIN. Never use it on a
+live network.
+
+## Hardening
+
+The same as `app/gateway`: security headers on every response (a content
+security policy that allows only the console's own script), request bodies
+capped at 1 MB, and five wrong passwords lock that username for 30 seconds,
+doubling after each further miss (`429` with `Retry-After`). A chaincode
+refusal comes back as `403` (not allowed), `404` (no such invoice), `409`
+(duplicate or wrong state) or `400` (bad input), each with the reason.
+
+`GET /health` reports the ledger, its height (committed transactions), and
+whether the demo IRP and the AI scoring are on. `-quiet` turns off the
+one-line-per-request log.
+
 ## What it is not
 
-No endorsement, ordering, MVCC, private-data dissemination or history. A
-failed transaction changes nothing, and, as on a Fabric peer, a transaction
-cannot read its own writes.
+No endorsement, ordering, MVCC or private-data dissemination. A failed
+transaction changes nothing, and, as on a Fabric peer, a transaction cannot
+read its own writes. It keeps each key's history, so `GetReceivableHistory`
+(the console's ledger trail) works as it does on a peer.
 
-`go test ./...` drives a full lifecycle over HTTP, including integer and
-JSON-array arguments and transient data, and checks that a login can act only
-as its own identity.
+`go test ./...` drives a full lifecycle over HTTP, and `security_test.go`
+pins down who may do what: every role against every state-changing function
+(403 for each one the rules forbid, and no change to the ledger), sealed-bid
+privacy between banks, sign-in on every endpoint, headers, the body cap, the
+sign-in lockout and the refusal codes.

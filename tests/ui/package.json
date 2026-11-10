@@ -1,0 +1,12 @@
+{
+  "name": "rasid-ui-tests",
+  "private": true,
+  "description": "Headless browser smoke test of the RASID web console",
+  "type": "module",
+  "scripts": {
+    "test": "node console.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}
